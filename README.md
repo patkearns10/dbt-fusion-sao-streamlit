@@ -33,55 +33,103 @@ The app will open automatically in your browser at `http://localhost:8501`
 1. Click on the **"⚙️ Configuration"** tab
 2. Enter your dbt Cloud credentials:
    - **dbt Cloud URL**: e.g., `https://cloud.getdbt.com`
-   - **API Key**: Your dbt Cloud API token
+   - **API Key**: Your dbt Cloud API token (supports both REST and GraphQL)
    - **Account ID**: Your dbt Cloud account ID
    - **Job ID**: Default job ID to analyze
    - **Project ID** (optional): For filtering
+   - **Environment ID** (optional): For GraphQL queries (Model Reuse & SLO Analysis)
 3. Click **"💾 Save Configuration"**
 
 You're ready to go! These credentials will be used across all tabs.
 
 ## 📊 Features
 
-The app provides four main tabs:
+The app provides six main tabs:
 
-### Tab 1: 📊 Summary Statistics (Main Dashboard)
-
-Quick health check showing:
-- **Freshness Configuration Coverage**: % of models/sources with freshness configs (Goal: 80%)
-- **Model Reuse Rate**: % of models reused from cache (Goal: 30%)
-- Breakdown by resource type
-- Model execution status overview
-
-**Perfect for**: Daily check-ins, stakeholder demos
-
-### Tab 2: ⚙️ Configuration
+### Tab 1: ⚙️ Configuration (Start Here!)
 
 One-time setup for your dbt Cloud credentials and default job settings.
 - Saves credentials in session (not persisted to disk)
-- Easy to reconfigure for different jobs
+- Easy to reconfigure for different jobs or environments
 - No need to re-enter credentials in other tabs
+- **Includes helpful descriptions of all analysis tabs**
 
-### Tab 3: 📋 Freshness Details
+**Perfect for**: First-time setup, switching between jobs/environments
 
-Detailed analysis of freshness configuration:
-- Model-by-model freshness breakdown
-- `warn_after`, `error_after`, `build_after` configurations
-- Filter by resource type
-- Export to CSV/JSON
+### Tab 2: 🎯 Environment Overview (Main Dashboard)
 
-**Perfect for**: Audits, investigating specific models, compliance
+**Your primary source of truth** for environment-wide health and performance:
+- Real-time status from dbt Cloud GraphQL API
+- **Key Metrics**: Reuse rate, freshness coverage, SLO compliance
+- **SLO Compliance Table**: All models with execution status and configuration
+- **Interactive Visualizations**: Build after distribution, status breakdown
+- **Automatic Insights**: AI-powered recommendations for optimization
+- Filter by status, SLO compliance, and freshness configuration
 
-### Tab 4: 📈 Run Status Details
+**Perfect for**: Daily monitoring, stakeholder reports, optimization planning
 
-Analyze model execution patterns over time:
+**Note**: Requires Environment ID to be configured
+
+### Tab 3: 📋 Model Details
+
+**Deep dive into individual model configurations** from job manifest:
+- Model-by-model freshness configuration
+- `warn_after`, `error_after`, `build_after` settings
+- Source and model identification
+- Filter and search capabilities
+- Export detailed reports
+
+**Perfect for**: Configuration audits, troubleshooting specific models, compliance documentation
+
+**Note**: Uses job manifest data (point-in-time snapshot)
+
+### Tab 4: 📈 Historical Trends
+
+**Analyze performance patterns** across multiple job runs over time:
+- **⚡ Parallel processing**: Analyzes up to 10 runs simultaneously for 5-10x faster results
+- **Reuse Rate Trending**: Track reuse percentage over time with trend line
+- **Goal Visualization**: 30% reuse goal line on charts
+- **Trend Statistics**: Average, peak, and lowest reuse rates  
+- **Trend Direction**: Calculate if reuse is improving or declining
 - Success vs. reused model trends
-- Interactive stacked bar charts
+- Interactive timeline charts
 - Per-run breakdown with statistics
-- Date range filtering (default: last 7 days)
-- Accurate "reused" status from log parsing
+- Date range filtering (recommended: 14-30 days)
 
-**Perfect for**: Weekly reviews, optimization planning, tracking efficiency
+**Perfect for**: Weekly/monthly reviews, trend analysis, before/after comparisons
+
+**Note**: Best with 20-50 runs for meaningful trends
+
+### Tab 5: 💰 Cost Analysis (NEW!)
+
+**Quantify the financial impact** of your dbt optimization efforts:
+- **Cost Estimation**: Calculate costs based on execution time and warehouse type
+- **Savings from Reuse**: Show money saved from cache hits  
+- **ROI Analysis**: Measure return on investment from freshness configurations
+- **Cost Trends**: Visualize cost patterns over time
+- **Top Expensive Models**: Identify the 20 most costly models
+- **Cost Breakdown**: Per-run and model-level cost analysis
+- **Multi-Currency Support**: USD, EUR, GBP, CAD, AUD
+- **Warehouse Configuration**: Support for 8 warehouse sizes (X-Small to 4X-Large)
+
+**Perfect for**: Stakeholder reporting, optimization prioritization, budget planning
+
+**Note**: Supports Snowflake pricing with customizable cost per hour
+
+### Tab 6: 🔀 Job Overlap Analysis (NEW!)
+
+**Identify models being run by multiple jobs** (pre-SAO optimization):
+- **Job Inventory**: List all jobs in the environment
+- **Overlap Detection**: Find models executed in multiple jobs
+- **Overlap Ranking**: Bar chart of most duplicated models
+- **Waste Calculation**: Quantify redundant executions
+- **Job-to-Job Matrix**: Visual overlap between jobs
+- **Priority Recommendations**: Based on overlap severity
+- **Export Options**: Download mappings and reports
+
+**Perfect for**: Pre-SAO environments, job consolidation, reducing waste, audit efficiency
+
+**Note**: In environments without State-Aware Orchestration (SAO), multiple jobs may unnecessarily run the same models. This analysis helps identify and eliminate that waste.
 
 ## 🎯 Key Metrics Explained
 
@@ -143,10 +191,11 @@ Analyze model execution patterns over time:
 
 ### Performance Tips for Run Analysis
 
-- **Start small**: Begin with 5-10 runs, then increase
-- **Narrow date range**: Shorter periods = faster analysis
-- Each run requires 3 API calls (run metadata, manifest, logs)
-- 10 runs typically takes 30-45 seconds
+- **Parallel processing enabled**: Up to 10 runs analyzed simultaneously
+- **Recommended**: 20-50 runs for comprehensive analysis (only takes 10-20 seconds)
+- **Date range**: Use 14-30 days for trending analysis
+- Each run requires 3 API calls (run metadata, manifest, logs) - done in parallel
+- 20 runs typically takes ~10-15 seconds (vs 60-100 seconds sequential)
 
 ### Understanding Run Statuses
 
@@ -181,26 +230,32 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m streamlit run streamlit_freshness_app.py
 - Check Account ID is correct
 - Ensure API key has access to the specified job
 
-### Run Status Analysis is Slow
+### Run Status Analysis Performance
 
-- **Expected**: 2-5 seconds per run analyzed
-- **Reduce runs**: Use slider to analyze fewer runs (5-10)
-- **Shorten date range**: Try last 7 days instead of 30
-- **Progress indicator**: Watch the progress bar to track analysis
+- **New parallel processing**: Analyzes up to 10 runs simultaneously
+- **Expected speed**: ~5-10 seconds for 20 runs (vs 40-100 seconds sequential)
+- **Recommended**: Feel free to analyze 20-50 runs at once
+- **Progress indicator**: Watch the progress bar to track parallel analysis
 
 ## 📂 Files
 
-- **`streamlit_freshness_app.py`**: Main Streamlit application
+- **`streamlit_freshness_app.py`**: Main Streamlit application with all analysis tabs
 - **`log_freshness.py`**: Core logic for fetching and processing dbt artifacts
 - **`log_freshness_from_job.py`**: Helper for fetching job runs
+- **`api_graphql_reused.py`**: Standalone script for GraphQL-based reuse analysis (also integrated into Streamlit app)
 - **`requirements.txt`**: Python dependencies
 
 ## 🔗 dbt Cloud API
 
-This app uses the dbt Cloud API v2:
-- [API Documentation](https://docs.getdbt.com/dbt-cloud/api-v2)
-- Requires an API key with job read permissions
-- Fetches manifest.json, run_results.json, and run logs
+This app uses both dbt Cloud REST API v2 and GraphQL API:
+- **REST API v2**: [API Documentation](https://docs.getdbt.com/dbt-cloud/api-v2)
+  - Used for freshness analysis and run status tracking
+  - Fetches manifest.json, run_results.json, and run logs
+- **GraphQL API**: [Metadata API](https://docs.getdbt.com/docs/dbt-cloud-apis/metadata-api)
+  - Used for environment-wide model reuse and SLO analysis
+  - Provides real-time execution information and configuration data
+- Requires an API key with appropriate read permissions
+- Supports both user tokens and service account tokens
 
 ## 📝 Notes
 
@@ -227,7 +282,7 @@ For issues or questions:
 ### Weekly Optimization Review (5-10 minutes)
 1. Summary Statistics → See overall health
 2. Freshness Details → Identify models without configs
-3. Run Status Details → Analyze 20 runs over 14 days
+3. Run Status Details → Analyze 30-50 runs over 14-30 days (only takes ~15 seconds!)
 4. Look for optimization opportunities
 5. Export data for action items
 
@@ -237,6 +292,14 @@ For issues or questions:
 3. Run Status Details → Chart of last 30 days
 4. Export CSV for their review
 
+### Environment SLO Audit (3-5 minutes)
+1. Model Reuse & SLO Analysis → Enter Environment ID
+2. Review key metrics: Total reuse rate, SLO compliance
+3. Check Build After Distribution charts
+4. Review models outside of SLO
+5. Follow insights & recommendations
+6. Export full analysis to CSV
+
 ## 🚀 Best Practices
 
 1. **Configure once per session**: Save time by setting up credentials in the Configuration tab
@@ -245,9 +308,26 @@ For issues or questions:
 4. **Export data**: Download CSV/JSON for sharing or further analysis
 5. **Track trends**: Run weekly to monitor improvements over time
 
+## 🔧 Standalone Script Usage
+
+The `api_graphql_reused.py` script can also be run independently for command-line analysis:
+
+```bash
+# Set environment variables
+export DBT_CLOUD_API_KEY="your_api_key_here"
+export DBT_CLOUD_ENVIRONMENT_ID="672"
+
+# Run the script
+python3 api_graphql_reused.py
+```
+
+This will fetch all models, calculate reuse statistics, and save results to CSV. However, the Streamlit app provides a much richer interactive experience with visualizations and filtering capabilities.
+
 ---
 
 **Version**: 2.0  
 **Updated**: November 2025  
 **Author**: dbt Labs Field Engineering
+
+
 

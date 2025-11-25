@@ -28,10 +28,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m streamlit run streamlit_freshness_app.py
 3. **Enter your credentials:**
    ```
    dbt Cloud URL: https://cloud.getdbt.com (or your instance URL)
-   API Key: [your dbt Cloud API token]
+   API Key: [your dbt Cloud API token - supports REST & GraphQL]
    Account ID: [your account ID]
    Job ID: [job you want to analyze]
    Project ID: [optional]
+   Environment ID: [optional - for Model Reuse & SLO Analysis]
    ```
 
 4. **Click "💾 Save Configuration"**
@@ -62,6 +63,17 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m streamlit run streamlit_freshness_app.py
 3. Set max runs to analyze (start with 10)
 4. Click **"📊 Analyze Run Statuses"**
 5. View interactive charts and tables
+
+### Option D: Environment-Wide SLO Analysis (1-2 minutes) 🆕
+
+1. Go to **"🔄 Model Reuse & SLO Analysis"** tab
+2. Enter your Environment ID
+3. Click **"🔍 Analyze Environment"**
+4. View:
+   - Total reuse percentage
+   - SLO compliance status
+   - Build after distribution charts
+   - Automatic insights & recommendations
 
 ## Common Tasks
 
@@ -102,11 +114,14 @@ Press `Ctrl+C` in the terminal where the app is running.
 dbt-fusion-sao-streamlit/
 ├── README.md                       # Full documentation
 ├── QUICKSTART.md                   # This file
+├── CHANGELOG.md                    # Version history
+├── MODEL_REUSE_GUIDE.md           # Guide for new SLO Analysis tab
 ├── requirements.txt                # Python dependencies
 ├── start.sh                        # Launch script
-├── streamlit_freshness_app.py     # Main Streamlit app
+├── streamlit_freshness_app.py     # Main Streamlit app (5 tabs)
 ├── log_freshness.py               # Core analysis logic
 ├── log_freshness_from_job.py      # Job fetching helper
+├── api_graphql_reused.py          # Standalone GraphQL script
 └── .gitignore                     # Prevent committing secrets
 ```
 
@@ -121,4 +136,6 @@ dbt-fusion-sao-streamlit/
 ---
 
 **Need help?** Check the full [README.md](README.md) for detailed documentation.
+
+
 

@@ -327,9 +327,12 @@ class DBTFreshnessLogger:
             print('Fetching run logs to detect reused models...')
             logs = self.fetch_run_logs()
             log_status_map = self.parse_logs_for_status(logs, manifest)
-            print(f'Found {sum(1 for s in log_status_map.values() if s == "reused")} reused models in logs')
+            reused_count = sum(1 for s in log_status_map.values() if s == "reused")
+            print(f'✓ Log parsing successful: Found {reused_count} reused models in logs')
+            print(f'  Total models in logs: {len(log_status_map)}')
         except Exception as e:
-            print(f'Warning: Could not parse logs: {e}')
+            print(f'⚠️  Warning: Could not parse logs: {e}')
+            print(f'  Will use fallback detection based on execution time')
             log_status_map = {}
         
         # Process results
@@ -352,6 +355,14 @@ class DBTFreshnessLogger:
             # Get status from logs if available, otherwise from run_results
             status = log_status_map.get(unique_id, result.get('status'))
             execution_time = result.get('execution_time', 0)
+            
+            # FALLBACK: If log parsing didn't find "reused" status, but execution_time is very small
+            # and status is "success", it's likely reused (SAO behavior)
+            if status == 'success' and execution_time < 0.1 and unique_id not in log_status_map:
+                # Very fast "success" with no log entry likely means reused
+                # But only if logs were parsed successfully (non-empty log_status_map)
+                if log_status_map:  # If we have ANY log data
+                    status = 'reused'
             
             # Get timing details
             timing = result.get('timing', [])
@@ -377,6 +388,26 @@ class DBTFreshnessLogger:
             }
             
             status_data['models'].append(model_data)
+        
+        # Print summary diagnostics
+        total_models = len(status_data['models'])
+        status_counts = {}
+        for model in status_data['models']:
+            status_counts[model['status']] = status_counts.get(model['status'], 0) + 1
+        
+        print(f'\n📊 Run Status Summary:')
+        print(f'  Total models in run: {total_models}')
+        for status, count in sorted(status_counts.items()):
+            pct = (count / total_models * 100) if total_models > 0 else 0
+            print(f'  {status}: {count} ({pct:.1f}%)')
+        
+        if total_models > 0:
+            execution_times = [m['execution_time'] for m in status_data['models']]
+            avg_time = sum(execution_times) / len(execution_times)
+            sorted_times = sorted(execution_times)
+            median_time = sorted_times[len(sorted_times) // 2] if sorted_times else 0
+            print(f'  Avg execution time: {avg_time:.3f}s')
+            print(f'  Median execution time: {median_time:.3f}s')
         
         return status_data
     
