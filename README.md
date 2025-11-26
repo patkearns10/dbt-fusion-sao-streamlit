@@ -2,6 +2,10 @@
 
 A Streamlit web application for analyzing dbt freshness configuration and model execution patterns across your dbt Cloud projects.
 
+Try here:
+https://dbt-fusion-sao.streamlit.app/
+
+
 ## ✨ What's New in v2.8.0
 
 ### 🎯 Revolutionary Step-Based Run Analysis
