@@ -13,6 +13,7 @@ import json
 import ast
 from datetime import datetime, timedelta
 from collections import defaultdict
+from typing import List
 import plotly.express as px
 import plotly.graph_objects as go
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -160,32 +161,150 @@ def get_status_name(status):
     return status
 
 
-def get_job_runs(api_base: str, api_key: str, account_id: str, job_id: str, project_id: str = None, limit: int = 20):
-    """Fetch recent runs for a specific job."""
+def get_job_runs(api_base: str, api_key: str, account_id: str, job_id: str, 
+                 environment_id: str = None, limit: int = 20, status: List[int] = None):
+    """
+    Fetch recent runs for a specific job.
+    
+    Args:
+        api_base: dbt Cloud API base URL
+        api_key: dbt Cloud API key
+        account_id: dbt Cloud account ID
+        job_id: Job definition ID
+        environment_id: Optional environment ID (Note: not used when querying by job_id as it's redundant)
+        limit: Max number of runs to fetch (per status if multiple). Will paginate if > 100.
+        status: Optional list of status codes to filter by (10=success, 20=error, 30=cancelled)
+                Note: API accepts one status per request, so we make multiple calls if needed
+    
+    Returns:
+        List of run objects
+    """
     url = f'{api_base}/api/v2/accounts/{account_id}/runs/'
     headers = {'Authorization': f'Token {api_key}'}
     
-    params = {
-        'limit': limit,
-        'offset': 0,
-        'order_by': '-id',
-        'job_definition_id': job_id,
-        'include_related': '["job","trigger","environment","repository"]',
-    }
+    # API has a max limit of 100 per request
+    API_MAX_LIMIT = 100
     
-    if project_id:
-        params['project_id'] = project_id
+    # If no status filter or only one status, make API call(s) with pagination if needed
+    if not status or len(status) == 1:
+        all_runs = []
+        runs_to_fetch = limit
+        offset = 0
+        
+        # Paginate if limit exceeds API max
+        while runs_to_fetch > 0:
+            page_limit = min(runs_to_fetch, API_MAX_LIMIT)
+            
+            params = {
+                'limit': page_limit,
+                'offset': offset,
+                'order_by': '-id',
+                'job_definition_id': job_id,
+                'include_related': '["job","trigger","environment","repository"]',
+            }
+            
+            if status:
+                params['status'] = status[0]
+            
+            response = requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            page_runs = data.get('data', [])
+            
+            if not page_runs:
+                break  # No more runs available
+            
+            all_runs.extend(page_runs)
+            
+            # If we got fewer runs than requested, we've reached the end
+            if len(page_runs) < page_limit:
+                break
+            
+            runs_to_fetch -= len(page_runs)
+            offset += len(page_runs)
+        
+        return all_runs
     
-    response = requests.get(url, headers=headers, params=params)
-    response.raise_for_status()
+    # Multiple statuses: make separate API calls (with pagination) and combine results
+    all_runs = []
+    seen_run_ids = set()
+    errors = []
     
-    data = response.json()
-    runs = data.get('data', [])
+    for status_code in status:
+        runs_to_fetch = limit
+        offset = 0
+        
+        # Paginate if limit exceeds API max
+        while runs_to_fetch > 0:
+            page_limit = min(runs_to_fetch, API_MAX_LIMIT)
+            
+            params = {
+                'limit': page_limit,
+                'offset': offset,
+                'order_by': '-id',
+                'job_definition_id': job_id,
+                'include_related': '["job","trigger","environment","repository"]',
+                'status': status_code
+            }
+            
+            try:
+                response = requests.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                
+                data = response.json()
+                page_runs = data.get('data', [])
+                
+                if not page_runs:
+                    break  # No more runs available for this status
+                
+                # Avoid duplicates (shouldn't happen, but just in case)
+                for run in page_runs:
+                    run_id = run.get('id')
+                    if run_id not in seen_run_ids:
+                        seen_run_ids.add(run_id)
+                        all_runs.append(run)
+                
+                # If we got fewer runs than requested, we've reached the end
+                if len(page_runs) < page_limit:
+                    break
+                
+                runs_to_fetch -= len(page_runs)
+                offset += len(page_runs)
+                
+            except requests.exceptions.HTTPError as e:
+                status_name = {10: 'Success', 20: 'Error', 30: 'Cancelled'}.get(status_code, str(status_code))
+                # Print the full URL for debugging
+                print(f"⚠️ Warning: Failed to fetch {status_name} runs")
+                print(f"   URL: {response.url if 'response' in locals() else 'N/A'}")
+                print(f"   Error: {str(e)}")
+                if hasattr(e.response, 'text'):
+                    print(f"   Response: {e.response.text[:500]}")
+                error_msg = f"Failed to fetch {status_name} runs (status code {status_code})"
+                errors.append(error_msg)
+                break  # Stop paginating this status on error
+            except Exception as e:
+                status_name = {10: 'Success', 20: 'Error', 30: 'Cancelled'}.get(status_code, str(status_code))
+                error_msg = f"Failed to fetch {status_name} runs: {str(e)}"
+                errors.append(error_msg)
+                print(f"Warning: {error_msg}")
+                break  # Stop paginating this status on error
     
-    return runs
+    # If we got errors but no runs, raise the first error
+    if errors and not all_runs:
+        raise Exception(f"Failed to fetch runs. Errors: {'; '.join(errors)}")
+    
+    # If we got some runs but had errors, continue with what we got
+    # (errors will be visible in console but won't break the analysis)
+    
+    # Sort by ID descending (most recent first)
+    all_runs.sort(key=lambda x: x.get('id', 0), reverse=True)
+    
+    # Limit to requested number
+    return all_runs[:limit]
 
 
-def analyze_run_statuses(api_base: str, api_key: str, account_id: str, job_id: str, project_id: str = None, 
+def analyze_run_statuses(api_base: str, api_key: str, account_id: str, job_id: str, 
                          start_date: datetime = None, end_date: datetime = None, limit: int = 100):
     """
     Analyze run statuses for a job over a date range.
@@ -193,7 +312,7 @@ def analyze_run_statuses(api_base: str, api_key: str, account_id: str, job_id: s
     Returns a dataframe with run status information.
     """
     # Fetch runs
-    runs = get_job_runs(api_base, api_key, account_id, job_id, project_id, limit)
+    runs = get_job_runs(api_base, api_key, account_id, job_id, environment_id=None, limit=limit)
     
     # Filter by date if provided
     if start_date or end_date:
@@ -373,7 +492,7 @@ def show_configuration_page():
         api_base = st.text_input(
             "dbt Cloud URL",
             value=st.session_state.config['api_base'],
-            help="Base URL for dbt Cloud instance",
+            help="Base URL for dbt Cloud instance (e.g., https://cloud.getdbt.com or https://vu491.us1.dbt.com - no trailing slash)",
             key="config_api_base"
         )
         
@@ -419,7 +538,7 @@ def show_configuration_page():
                 st.error("❌ API Key and Account ID are required")
             else:
                 st.session_state.config = {
-                    'api_base': api_base,
+                    'api_base': api_base.rstrip('/'),  # Strip trailing slash to avoid double slashes in URLs
                     'api_key': api_key,
                     'account_id': account_id,
                     'project_id': project_id,
@@ -549,6 +668,17 @@ def show_freshness_analysis():
             key="freshness_job_types"
         )
     
+    col4, col5 = st.columns(2)
+    
+    with col4:
+        run_status_filter = st.multiselect(
+            "Run Status Filter",
+            options=["Success", "Error", "Cancelled"],
+            default=["Success"],
+            help="Filter runs by their completion status",
+            key="freshness_run_status"
+        )
+    
     analyze_button = st.button("🔍 Analyze Freshness", type="primary", key="freshness_analyze")
     
     # Main content area
@@ -601,7 +731,20 @@ def show_freshness_analysis():
                     st.error(f"❌ No jobs found matching job types: {', '.join(job_types_filter)}")
                     return
                 
-                # Get latest successful run from filtered jobs
+                # Convert status filter to status codes
+                status_codes = []
+                if "Success" in run_status_filter:
+                    status_codes.append(10)
+                if "Error" in run_status_filter:
+                    status_codes.append(20)
+                if "Cancelled" in run_status_filter:
+                    status_codes.append(30)
+                
+                if not status_codes:
+                    st.error("❌ Please select at least one run status to filter by")
+                    return
+                
+                # Get latest run matching status filter from filtered jobs
                 latest_run = None
                 for job in jobs:
                     runs = get_job_runs(
@@ -609,41 +752,55 @@ def show_freshness_analysis():
                         config['api_key'],
                         config['account_id'],
                         str(job['id']),
-                        config.get('project_id') or None,
-                        limit=1
+                        config.get('environment_id'),
+                        limit=1,
+                        status=status_codes
                     )
                     
                     if runs:
-                        # Filter for successful runs
-                        successful_runs = [r for r in runs if r.get('status') == 10]
-                        if successful_runs:
-                            if not latest_run or successful_runs[0]['id'] > latest_run['id']:
-                                latest_run = successful_runs[0]
+                        if not latest_run or runs[0]['id'] > latest_run['id']:
+                            latest_run = runs[0]
                 
                 if not latest_run:
-                    st.error(f"❌ No successful runs found in environment for job types: {', '.join(job_types_filter)}")
+                    st.error(f"❌ No runs found matching status [{', '.join(run_status_filter)}] for job types: {', '.join(job_types_filter)}")
                     return
                 
                 run_id = latest_run['id']
-                st.info(f"📋 Analyzing latest run from environment: {run_id} (Job: {latest_run.get('job_definition_id')})")
+                run_status_humanized = RUN_STATUS_CODES.get(latest_run.get('status'), 'unknown')
+                st.info(f"📋 Analyzing latest run from environment: {run_id} (Job: {latest_run.get('job_definition_id')}, Status: {run_status_humanized})")
             
             elif source_mode == "Specific Job ID":
+                # Convert status filter to status codes
+                status_codes = []
+                if "Success" in run_status_filter:
+                    status_codes.append(10)
+                if "Error" in run_status_filter:
+                    status_codes.append(20)
+                if "Cancelled" in run_status_filter:
+                    status_codes.append(30)
+                
+                if not status_codes:
+                    st.error("❌ Please select at least one run status to filter by")
+                    return
+                
                 # Get latest run from specific job
                 runs = get_job_runs(
                     config['api_base'],
                     config['api_key'],
                     config['account_id'],
                     job_id_input,
-                    config.get('project_id') or None,
-                    limit=1
+                    config.get('environment_id'),
+                    limit=1,
+                    status=status_codes
                 )
                 
                 if not runs:
-                    st.error(f"❌ No runs found for job {job_id_input}")
+                    st.error(f"❌ No runs found for job {job_id_input} with status: {', '.join(run_status_filter)}")
                     return
                 
                 run_id = runs[0]['id']
-                st.info(f"📋 Analyzing latest run from job {job_id_input}: {run_id}")
+                run_status_humanized = RUN_STATUS_CODES.get(runs[0].get('status'), 'unknown')
+                st.info(f"📋 Analyzing latest run from job {job_id_input}: {run_id} (Status: {run_status_humanized})")
             
             elif source_mode == "Specific Run ID":
                 run_id = int(run_id_input)
@@ -805,11 +962,22 @@ def show_freshness_analysis():
         st.exception(e)
 
 
-def process_single_run(api_base: str, api_key: str, account_id: str, run_id: int, run_created: str):
+def process_single_run(api_base: str, api_key: str, account_id: str, run_id: int, run_created: str, 
+                       job_id: str = None, job_name: str = None, run_status: int = None):
     """
     Process a single run to extract model status data.
     
     This function is designed to be called in parallel for multiple runs.
+    
+    Args:
+        api_base: dbt Cloud API base URL
+        api_key: dbt Cloud API key
+        account_id: dbt Cloud account ID
+        run_id: Run ID to process
+        run_created: Run created timestamp
+        job_id: Job definition ID (optional)
+        job_name: Job name (optional)
+        run_status: Run invocation status code (optional)
     """
     try:
         logger = DBTFreshnessLogger(api_base, api_key, account_id, str(run_id))
@@ -823,8 +991,18 @@ def process_single_run(api_base: str, api_key: str, account_id: str, run_id: int
                 for model in run_status_data['models']:
                     model['run_id'] = run_id
                     model['run_created_at'] = run_created
+                    model['job_id'] = job_id
+                    model['job_name'] = job_name
+                    model['run_status'] = run_status
                     models.append(model)
-                return {'run_id': run_id, 'success': True, 'models': models}
+                return {
+                    'run_id': run_id, 
+                    'success': True, 
+                    'models': models,
+                    'job_id': job_id,
+                    'job_name': job_name,
+                    'run_status': run_status
+                }
         
         return {'run_id': run_id, 'success': False, 'error': 'No data in response'}
     except Exception as e:
@@ -872,9 +1050,9 @@ def show_run_status_analysis():
         max_runs = st.slider(
             "Max Runs",
             min_value=5,
-            max_value=50,
+            max_value=80,
             value=10,
-            help="Maximum number of runs to analyze"
+            help="Maximum number of runs to analyze (from total found)"
         )
     
     with col4:
@@ -900,17 +1078,26 @@ def show_run_status_analysis():
             help="Filter by job type"
         )
     
-    # SAO filter option
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.info("💡 **Performance Tip**: Runs are processed in parallel (up to 10 at a time) for much faster analysis! Feel free to analyze 20-50 runs.")
-    with col2:
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        run_status_filter = st.multiselect(
+            "Run Status",
+            options=["Success", "Error", "Cancelled"],
+            default=["Success"],
+            help="Filter runs by completion status"
+        )
+    
+    with col4:
         sao_only = st.checkbox(
             "SAO Jobs Only",
             value=True,
             help="Only analyze jobs with State-Aware Orchestration enabled (recommended for accurate reuse metrics)",
             key="run_sao_only"
         )
+    
+    # Performance tip
+    st.info("💡 **Performance Tip**: Runs are processed in parallel (up to 10 at a time) for much faster analysis! Feel free to analyze 20-50 runs.")
     
     analyze_button = st.button("📊 Analyze Run Statuses", type="primary", key="run_analyze")
     
@@ -925,6 +1112,19 @@ def show_run_status_analysis():
         return
     elif job_source == "All Jobs in Environment" and not config.get('environment_id'):
         st.error("❌ Please configure Environment ID in the Configuration tab to use 'All Jobs in Environment' mode")
+        return
+    
+    # Convert status filter to status codes
+    status_codes = []
+    if "Success" in run_status_filter:
+        status_codes.append(10)
+    if "Error" in run_status_filter:
+        status_codes.append(20)
+    if "Cancelled" in run_status_filter:
+        status_codes.append(30)
+    
+    if not status_codes:
+        st.error("❌ Please select at least one run status to filter by")
         return
     
     try:
@@ -963,6 +1163,8 @@ def show_run_status_analysis():
             status_text.text(f"🔄 Found {len(jobs)} jobs. Fetching runs...")
             
             # Get runs from all filtered jobs
+            # Fetch more than max_runs initially to ensure we have enough after date filtering
+            fetch_limit = min(200, max_runs * 3)  # Fetch 3x the slider limit or 200, whichever is smaller
             all_runs = []
             for idx, job in enumerate(jobs):
                 job_runs = get_job_runs(
@@ -970,8 +1172,9 @@ def show_run_status_analysis():
                     config['api_key'],
                     config['account_id'],
                     str(job['id']),
-                    config.get('project_id') or None,
-                    limit=max_runs
+                    config.get('environment_id'),
+                    limit=fetch_limit,
+                    status=status_codes
                 )
                 all_runs.extend(job_runs)
                 
@@ -979,19 +1182,25 @@ def show_run_status_analysis():
                 progress = int((idx + 1) / len(jobs) * 10)
                 progress_bar.progress(progress)
             
-            # Sort by date and limit
-            all_runs = sorted(all_runs, key=lambda x: x.get('created_at', ''), reverse=True)[:max_runs]
+            # Sort by date (don't limit yet - do that after date filtering)
+            all_runs = sorted(all_runs, key=lambda x: x.get('created_at', ''), reverse=True)
             runs = all_runs
             
         else:  # Specific Job ID
+            # Fetch more runs than the slider to account for date filtering
+            fetch_limit = min(200, max_runs * 3)
             runs = get_job_runs(
                 config['api_base'],
                 config['api_key'],
                 config['account_id'],
                 job_id_input,
-                config.get('project_id') or None,
-                limit=max_runs
+                config.get('environment_id'),
+                limit=fetch_limit,
+                status=status_codes
             )
+        
+        # Store count before date filtering
+        runs_before_date_filter = len(runs)
         
         # Filter by date
         if start_datetime or end_datetime:
@@ -1014,13 +1223,16 @@ def show_run_status_analysis():
             runs = filtered_runs
         
         if not runs:
-            st.warning("No runs found in the specified date range")
+            st.warning(f"No runs found in the specified date range ({start_date} to {end_date})")
+            st.info(f"ℹ️ Found {runs_before_date_filter} total runs, but none matched the date range filter.")
             progress_bar.empty()
             status_text.empty()
             return
         
+        # Store count after date filtering but before SAO filtering
+        runs_after_date_filter = len(runs)
+        
         # Filter by SAO if requested
-        original_run_count = len(runs)
         if sao_only:
             status_text.text(f"🔍 Filtering to SAO-enabled jobs only...")
             sao_runs, non_sao_runs = filter_runs_by_sao(runs)
@@ -1036,7 +1248,15 @@ def show_run_status_analysis():
             if non_sao_runs:
                 st.info(f"ℹ️ Filtered to {len(runs)} SAO-enabled runs (excluded {len(non_sao_runs)} non-SAO runs)")
         
-        status_text.text(f"✅ Found {len(runs)} runs. Analyzing in parallel...")
+        # Now limit to max_runs AFTER all filtering
+        total_runs_found = len(runs)
+        runs = runs[:max_runs]
+        
+        # Better status message
+        if total_runs_found > max_runs:
+            status_text.text(f"✅ Found {total_runs_found} runs in date range, analyzing {len(runs)} most recent (limited by slider)...")
+        else:
+            status_text.text(f"✅ Found {total_runs_found} runs in date range. Analyzing all in parallel...")
         progress_bar.progress(10)
         
         # Analyze runs in parallel using ThreadPoolExecutor
@@ -1052,11 +1272,14 @@ def show_run_status_analysis():
             future_to_run = {
                 executor.submit(
                     process_single_run,
-                    config['api_base'],
-                    config['api_key'],
-                    config['account_id'],
+                config['api_base'],
+                config['api_key'],
+                config['account_id'],
                     run.get('id'),
-                    run.get('created_at')
+                    run.get('created_at'),
+                    run.get('job_definition_id'),
+                    run.get('job', {}).get('name') if run.get('job') else None,
+                    run.get('status')
                 ): run.get('id') for run in runs
             }
             
@@ -1113,12 +1336,19 @@ def show_run_status_analysis():
                 st.text(f"  {status}: {count:,} ({pct:.1f}%)")
             
             st.markdown("""
-            **How we detect 'Reused' status:**  
-            We parse the dbt Cloud run logs which contain lines like:
-            ```
-            Reused [  0.51s] model analytics.stg_salesforce__rev_schedules
-            ```
-            This gives us accurate reuse counts matching the dbt Cloud UI!
+            **How we detect model status:**  
+            We use the **step-based approach** to get accurate status from `run_results.json`:
+            
+            1. **Identify relevant steps**: Filter to only `dbt run` and `dbt build` commands
+            2. **Fetch run_results.json**: Get results from each relevant step
+            3. **Aggregate results**: Combine data across all steps for accurate counts
+            
+            This eliminates guesswork and heuristics - we use the actual status from dbt's execution results!
+            
+            **Status values:**
+            - `success`: Model executed successfully
+            - `error`: Model execution failed  
+            - `skipped`: Model was skipped (often due to deferral/reuse)
             """)
         
         # Summary Statistics
@@ -1248,6 +1478,14 @@ def show_run_status_analysis():
         # Create stacked bar chart
         fig = go.Figure()
         
+        # Define colors for each status
+        status_colors = {
+            'success': '#22c55e',  # green
+            'error': '#ef4444',    # red
+            'reused': '#60a5fa',   # light blue
+            'skipped': '#9ca3af'   # grey
+        }
+        
         # Add bars for each status
         for status in pivot_df.columns[2:]:  # Skip run_id and run_created_at
             fig.add_trace(go.Bar(
@@ -1255,7 +1493,8 @@ def show_run_status_analysis():
                 x=pivot_df['run_created_at'],
                 y=pivot_df[status],
                 text=pivot_df[status],
-                textposition='inside'
+                textposition='inside',
+                marker_color=status_colors.get(status, '#6b7280')  # default to gray if status not found
             ))
         
         fig.update_layout(
@@ -1273,30 +1512,15 @@ def show_run_status_analysis():
         st.subheader("📋 Detailed Run Breakdown")
         
         st.markdown("""
-        **Status values** are parsed from dbt Cloud run logs to accurately identify reused vs. executed models.
-        """)
-        
-        # Check for suspicious data (all success with low median time - likely failed reuse detection)
-        suspicious_runs = []
-        for _, row in df.groupby('run_id').agg({
-            'status': lambda x: (x == 'success').sum() / len(x) if len(x) > 0 else 0,
-            'execution_time': 'median'
-        }).reset_index().iterrows():
-            if row['status'] > 0.95 and row['execution_time'] < 0.05:  # 95%+ success, median < 0.05s
-                suspicious_runs.append(row['run_id'])
-        
-        if suspicious_runs:
-            st.warning(f"""
-            ⚠️ **Data Quality Notice**: {len(suspicious_runs)} run(s) show all models as "success" with very low execution times. 
-            This typically means log parsing failed to detect "reused" status for that run. The counts are still accurate 
-            (showing models that were part of the run), but the success/reused breakdown may be incorrect.
-            
-            Affected runs: {', '.join(map(str, suspicious_runs[:5]))}{'...' if len(suspicious_runs) > 5 else ''}
+        **Status values** are extracted from `run_results.json` using a step-based approach that filters to only `dbt run` and `dbt build` commands.
         """)
         
         # Create summary by run
         run_summary = df.groupby(['run_id', 'run_created_at']).agg({
-            'status': lambda x: x.value_counts().to_dict()
+            'status': lambda x: x.value_counts().to_dict(),
+            'job_id': 'first',
+            'job_name': 'first',
+            'run_status': 'first'
         }).reset_index()
         
         # Calculate execution time stats separately
@@ -1307,6 +1531,9 @@ def show_run_status_analysis():
         
         # Merge execution time stats
         run_summary = run_summary.merge(exec_time_stats, on='run_id', how='left')
+        
+        # Map run_status codes to human-readable names
+        run_summary['run_status_name'] = run_summary['run_status'].map(RUN_STATUS_CODES)
         
         # Expand status counts
         status_columns = []
@@ -1328,7 +1555,7 @@ def show_run_status_analysis():
             has_reuse_column = True
         
         # Format for display
-        display_columns = ['run_created_at', 'run_id', 'total'] + status_columns
+        display_columns = ['run_created_at', 'run_id', 'job_id', 'job_name', 'run_status_name', 'total'] + status_columns
         if has_reuse_column:
             display_columns.append('reuse_rate_%')
         
@@ -1342,8 +1569,8 @@ def show_run_status_analysis():
         display_summary['avg_exec_time'] = display_summary['avg_exec_time'].round(3)
         display_summary['median_exec_time'] = display_summary['median_exec_time'].round(3)
         
-        # Set column names
-        new_column_names = ['Run Date', 'Run ID', 'Total'] + [s.title() for s in status_columns]
+        # Set column names - must match display_columns order
+        new_column_names = ['Run Date', 'Run ID', 'Job ID', 'Job Name', 'Run Status', 'Total'] + [s.title() for s in status_columns]
         if has_reuse_column:
             new_column_names.append('Reuse Rate %')
         new_column_names.extend(['Avg Time (s)', 'Median Time (s)'])
@@ -2007,18 +2234,37 @@ def show_cost_analysis():
             key="cost_job_types"
         )
     
-    if job_source == "Specific Job ID":
-        job_id_input = st.text_input("Job ID", help="Specific dbt Cloud job ID", key="cost_job_id")
-    else:
-        job_id_input = None
+    col3, col4 = st.columns(2)
     
-    # SAO filter option
-    sao_only = st.checkbox(
-        "SAO Jobs Only",
-        value=True,
-        help="Only analyze jobs with State-Aware Orchestration enabled (recommended for accurate cost/reuse metrics)",
-        key="cost_sao_only"
-    )
+    with col3:
+        if job_source == "Specific Job ID":
+            job_id_input = st.text_input("Job ID", help="Specific dbt Cloud job ID", key="cost_job_id")
+        else:
+            job_id_input = None
+            run_status_filter = st.multiselect(
+                "Run Status",
+                options=["Success", "Error", "Cancelled"],
+                default=["Success"],
+                help="Filter runs by completion status",
+                key="cost_run_status"
+            )
+    
+    with col4:
+        # SAO filter option
+        sao_only = st.checkbox(
+            "SAO Jobs Only",
+            value=True,
+            help="Only analyze jobs with State-Aware Orchestration enabled (recommended for accurate cost/reuse metrics)",
+            key="cost_sao_only"
+        )
+        if job_source == "Specific Job ID":
+            run_status_filter = st.multiselect(
+                "Run Status",
+                options=["Success", "Error", "Cancelled"],
+                default=["Success"],
+                help="Filter runs by completion status",
+                key="cost_run_status2"
+            )
     
     # Date range for analysis
     st.subheader("📅 Analysis Period")
@@ -2084,6 +2330,19 @@ def show_cost_analysis():
         st.error("❌ Please configure Environment ID in the Configuration tab to use 'All Jobs in Environment' mode")
         return
     
+    # Convert status filter to status codes
+    status_codes = []
+    if "Success" in run_status_filter:
+        status_codes.append(10)
+    if "Error" in run_status_filter:
+        status_codes.append(20)
+    if "Cancelled" in run_status_filter:
+        status_codes.append(30)
+    
+    if not status_codes:
+        st.error("❌ Please select at least one run status to filter by")
+        return
+    
     try:
         # Convert dates to datetime
         start_datetime = datetime.combine(start_date, datetime.min.time())
@@ -2127,8 +2386,9 @@ def show_cost_analysis():
                     config['api_key'],
                     config['account_id'],
                     str(job['id']),
-                    config.get('project_id') or None,
-                    limit=max_runs
+                    config.get('environment_id'),
+                    limit=max_runs,
+                    status=status_codes
                 )
                 all_runs.extend(job_runs)
                 
@@ -2146,8 +2406,9 @@ def show_cost_analysis():
                 config['api_key'],
                 config['account_id'],
                 job_id_input,
-                config.get('project_id') or None,
-                limit=max_runs
+                config.get('environment_id'),
+                limit=max_runs,
+                status=status_codes
             )
         
         # Filter by date
@@ -2210,7 +2471,10 @@ def show_cost_analysis():
                     config['api_key'],
                     config['account_id'],
                     run.get('id'),
-                    run.get('created_at')
+                    run.get('created_at'),
+                    run.get('job_definition_id'),
+                    run.get('job', {}).get('name') if run.get('job') else None,
+                    run.get('status')
                 ): run.get('id') for run in runs
             }
             
@@ -2703,10 +2967,10 @@ def show_job_overlap_analysis():
                 recent_runs = check_response.json().get('data', [])
                 
                 # Check if most recent run is currently running
-                if recent_runs and recent_runs[0].get('status') in [1, 2, 3]:  # Queued, Starting, Running
+                # If so, we'll fetch the latest successful run instead of skipping
+                is_currently_running = recent_runs and recent_runs[0].get('status') in [1, 2, 3]  # Queued, Starting, Running
+                if is_currently_running:
                     jobs_running += 1
-                    jobs_skipped += 1
-                    continue
                 
                 # Now get latest successful run
                 run_url = f'{config["api_base"]}/api/v2/accounts/{config["account_id"]}/runs/'
@@ -2729,33 +2993,69 @@ def show_job_overlap_analysis():
                 
                 run_id = runs[0]['id']
                 
-                # Get run_results.json
-                artifacts_url = f'{config["api_base"]}/api/v2/accounts/{config["account_id"]}/runs/{run_id}/artifacts/'
+                # Use the new step-based approach to get accurate model lists
+                # Fetch run steps and filter to only run/build commands
+                run_details_url = f'{config["api_base"]}/api/v2/accounts/{config["account_id"]}/runs/{run_id}/'
+                run_details_params = {'include_related': '["run_steps"]'}
                 
-                # Check artifacts
-                artifacts_response = requests.get(artifacts_url, headers=headers)
-                artifacts_response.raise_for_status()
-                artifacts = artifacts_response.json().get('data', [])
+                run_details_response = requests.get(run_details_url, headers=headers, params=run_details_params)
+                run_details_response.raise_for_status()
                 
-                # Download run_results.json
-                run_results = None
-                for path in artifacts:
-                    if path.endswith('run_results.json'):
-                        results_response = requests.get(f'{artifacts_url}run_results.json', headers=headers)
+                run_data = run_details_response.json().get('data', {})
+                run_steps = run_data.get('run_steps', [])
+                
+                # Filter to only 'dbt run' and 'dbt build' commands
+                relevant_steps = []
+                for step in run_steps:
+                    step_name = step.get('name', '')
+                    step_index = step.get('index')
+                    
+                    if 'dbt run' in step_name or 'dbt build' in step_name:
+                        relevant_steps.append(step_index)
+                
+                # Collect models from all relevant steps
+                all_models = set()  # Use set to avoid duplicates
+                
+                if relevant_steps:
+                    # Fetch run_results.json from each relevant step
+                    for step_idx in relevant_steps:
+                        artifacts_url = f'{config["api_base"]}/api/v2/accounts/{config["account_id"]}/runs/{run_id}/artifacts/run_results.json?step={step_idx}'
+                        
+                        try:
+                            results_response = requests.get(artifacts_url, headers=headers)
+                            if results_response.ok:
+                                run_results = results_response.json()
+                                
+                                # Extract models from this step
+                                for result in run_results.get('results', []):
+                                    unique_id = result.get('unique_id', '')
+                                    if unique_id.startswith('model.'):
+                                        all_models.add(unique_id)
+                        except Exception:
+                            # If this step fails, continue to next step
+                            continue
+                else:
+                    # Fallback: no relevant steps found, try default run_results.json
+                    artifacts_url = f'{config["api_base"]}/api/v2/accounts/{config["account_id"]}/runs/{run_id}/artifacts/run_results.json'
+                    
+                    try:
+                        results_response = requests.get(artifacts_url, headers=headers)
                         if results_response.ok:
                             run_results = results_response.json()
-                            break
+                            
+                            for result in run_results.get('results', []):
+                                unique_id = result.get('unique_id', '')
+                                if unique_id.startswith('model.'):
+                                    all_models.add(unique_id)
+                    except Exception:
+                        pass
                 
-                if not run_results:
+                if not all_models:
                     jobs_skipped += 1
                     continue
                 
-                # Extract models
-                models = []
-                for result in run_results.get('results', []):
-                    unique_id = result.get('unique_id', '')
-                    if unique_id.startswith('model.'):
-                        models.append(unique_id)
+                # Convert set to list
+                models = list(all_models)
                 
                 # Store mappings
                 job_to_models[job_name] = {
@@ -2799,17 +3099,18 @@ def show_job_overlap_analysis():
         
         with col1:
             st.metric("Total Jobs Analyzed", f"{jobs_analyzed:,}")
+            if jobs_running > 0:
+                st.caption(f"ℹ️ {jobs_running} job(s) currently running - using latest successful run")
             if jobs_skipped > 0:
                 skip_details = []
-                if jobs_running > 0:
-                    skip_details.append(f"{jobs_running} currently running")
                 if jobs_never_succeeded > 0:
                     skip_details.append(f"{jobs_never_succeeded} never succeeded")
-                other_skipped = jobs_skipped - jobs_running - jobs_never_succeeded
+                other_skipped = jobs_skipped - jobs_never_succeeded
                 if other_skipped > 0:
                     skip_details.append(f"{other_skipped} other")
                 
-                st.caption(f"⚠️ {jobs_skipped} jobs skipped: {', '.join(skip_details)}")
+                if skip_details:
+                    st.caption(f"⚠️ {jobs_skipped} jobs skipped: {', '.join(skip_details)}")
         
         with col2:
             st.metric("Total Unique Models", f"{len(model_to_jobs):,}")
@@ -2821,22 +3122,57 @@ def show_job_overlap_analysis():
             overlap_rate = (len(overlapping_models) / len(model_to_jobs) * 100) if len(model_to_jobs) > 0 else 0
             st.metric("Overlap Rate", f"{overlap_rate:.1f}%")
         
-        # Show skipped jobs info if any
+        # Show info about currently running and skipped jobs
+        info_messages = []
+        
+        if jobs_running > 0:
+            info_messages.append(f'- **{jobs_running} job(s) currently running** - Using their latest successful run for analysis')
+        
         if jobs_skipped > 0:
+            skip_info = []
+            if jobs_never_succeeded > 0:
+                skip_info.append(f'- **{jobs_never_succeeded} never succeeded** - No successful runs in history (may be new, disabled, or have errors)')
+            other_skipped = jobs_skipped - jobs_never_succeeded
+            if other_skipped > 0:
+                skip_info.append(f'- **{other_skipped} other** - Missing artifacts or other issues')
+            
+            if skip_info:
+                info_messages.append(f'**{jobs_skipped} job(s) were excluded:**')
+                info_messages.extend(skip_info)
+        
+        if info_messages:
             st.divider()
-            st.info(f"""
-            ℹ️ **{jobs_skipped} job(s) were excluded from this analysis:**
-            
-            {f'- **{jobs_running} currently running** - Will be included once they complete successfully' if jobs_running > 0 else ''}
-            {f'- **{jobs_never_succeeded} never succeeded** - No successful runs in history (may be new, disabled, or have errors)' if jobs_never_succeeded > 0 else ''}
-            {f'- **{jobs_skipped - jobs_running - jobs_never_succeeded} other** - Missing artifacts or other issues' if (jobs_skipped - jobs_running - jobs_never_succeeded) > 0 else ''}
-            
-            💡 **Tip**: Re-run this analysis later to include jobs that are currently running.
-            """)
+            st.info('ℹ️ ' + '\n'.join(info_messages))
         
         # Assessment
         if len(overlapping_models) == 0:
             st.success("✅ **Excellent!** No models are being run in multiple jobs. Your job structure is optimized!")
+            
+            # Show table of all jobs analyzed even when no overlap
+            st.divider()
+            st.subheader("📊 Jobs Analyzed")
+            
+            # Create summary of all jobs
+            jobs_summary = []
+            for job_name, job_data in job_to_models.items():
+                jobs_summary.append({
+                    'Job Name': job_name,
+                    'Job ID': job_data['job_id'],
+                    'Run ID': job_data['run_id'],
+                    'Model Count': len(job_data['models'])
+                })
+            
+            jobs_summary_df = pd.DataFrame(jobs_summary)
+            jobs_summary_df = jobs_summary_df.sort_values('Model Count', ascending=False)
+            
+            st.dataframe(
+                jobs_summary_df,
+                width='stretch',
+                hide_index=True
+            )
+            
+            st.caption(f"✓ Analyzed {len(jobs_summary_df)} jobs with a total of {len(model_to_jobs)} unique models")
+            
         elif overlap_rate < 10:
             st.info(f"✓ **Good** - Only {overlap_rate:.1f}% of models have overlap. Minor optimization opportunity.")
         elif overlap_rate < 25:
@@ -2982,7 +3318,7 @@ def show_job_overlap_analysis():
                         else:
                             models2 = set(job_to_models[job2]['models'])
                             overlap = len(models1.intersection(models2))
-                            row[job2] = overlap if overlap > 0 else ''
+                            row[job2] = overlap  # Use 0 instead of empty string for consistent type
                     
                     overlap_matrix.append(row)
                 

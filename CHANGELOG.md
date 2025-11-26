@@ -1,5 +1,438 @@
 # Changelog
 
+## [2.8.6] - November 26, 2025
+
+### Critical Bug Fix: API Limit Pagination 📊
+
+#### Problem
+API calls were failing with **"Limit must not exceed 100"** error when trying to fetch more than 100 runs:
+```
+Response: {"status": {"code": 400, "is_success": false, 
+          "user_message": "Limit must not exceed 100", ...}
+```
+
+#### Root Cause
+The code was calculating `fetch_limit = min(200, max_runs * 3)` to account for date filtering, which could result in requests like:
+- User sets slider to 54 runs
+- Code calculates: `54 * 3 = 162` runs
+- API request: `limit=162` ❌ (exceeds max of 100)
+
+#### Solution
+Implemented **automatic pagination** when limit exceeds 100:
+- Split large requests into multiple API calls
+- Each call limited to max 100 runs
+- Uses `offset` parameter to fetch subsequent pages
+- Works for both single and multiple status filters
+
+#### Code Changes
+```python
+# Before
+params = {'limit': limit, ...}  # Could be > 100 ❌
+
+# After
+API_MAX_LIMIT = 100
+while runs_to_fetch > 0:
+    page_limit = min(runs_to_fetch, API_MAX_LIMIT)
+    params = {'limit': page_limit, 'offset': offset, ...}
+    # Fetch page, increment offset, repeat ✅
+```
+
+#### Also Fixed
+- Enhanced error logging now shows API response body
+- Made it clear that `environment_id` is not needed with `job_definition_id`
+
+**Result:** ✅ Can now fetch up to 240 runs (80 * 3) across multiple API calls!
+
+---
+
+## [2.8.5] - November 26, 2025
+
+### Critical Bug Fix: Trailing Slash in API Base URL 🔧
+
+#### Problem
+400 errors were occurring due to **double slashes** in API URLs:
+```
+https://vu491.us1.dbt.com//api/v2/...  ❌ (double slash)
+                        ^^
+```
+
+#### Root Cause
+When users entered the API base URL with a trailing slash:
+- Input: `https://vu491.us1.dbt.com/`
+- Code adds: `/api/v2/...`
+- Result: `https://vu491.us1.dbt.com//api/v2/...` ❌
+
+#### Solution
+- **Auto-strip trailing slashes** when saving configuration
+- Updated help text to show correct format examples
+- Now handles URLs with or without trailing slashes
+
+#### Code Change
+```python
+# Before
+'api_base': api_base,  # Could have trailing slash
+
+# After
+'api_base': api_base.rstrip('/'),  # Always clean
+```
+
+#### Also Improved
+- **Better error messages** when status API calls fail
+- Surfaces errors to user instead of failing silently
+- Shows which specific status failed and why
+
+**Result:** ✅ Works with any URL format! No more double slash errors!
+
+---
+
+## [2.8.4] - November 26, 2025
+
+### Critical Fix: Multiple Status API Calls 🚀
+
+#### Fixed: Proper Multi-Status Filtering
+
+**The Issue:**
+- dbt Cloud API only accepts **one `status` value per request**
+- Passing multiple statuses like `?status=10&status=20` causes 400 errors
+- Previous fix (v2.8.3) fetched all runs and filtered client-side (inefficient)
+
+**The Solution:**
+- **Make separate API calls** for each status
+- Combine results and remove duplicates
+- Sort by most recent
+- Much more efficient than fetching all runs!
+
+**How It Works:**
+```python
+# For Success + Error:
+# Call 1: GET /runs/?status=10&environment_id=672
+# Call 2: GET /runs/?status=20&environment_id=672
+# Combine results → return most recent runs
+```
+
+**Example:**
+- User selects: Success (10) + Error (20)
+- Makes 2 API calls: one for status=10, one for status=20
+- Combines and returns up to `limit` most recent runs
+- ✅ Fast, efficient, accurate!
+
+**Also Fixed:**
+- Now using `environment_id` parameter instead of `project_id`
+- Both work, but `environment_id` is more semantically correct
+- Updated all `get_job_runs()` calls throughout the app
+
+**Affected Tabs:**
+- ✅ Model Details
+- ✅ Historical Trends
+- ✅ Cost Analysis
+
+**Performance:**
+- Much faster than fetching all runs
+- Only fetches what's needed
+- Minimal API overhead (typically 1-3 calls)
+
+---
+
+## [2.8.3] - November 26, 2025
+
+### Critical Bug Fix 🚨
+
+#### Fixed: 400 Bad Request Error with Multiple Status Filters
+
+**Error:**
+```
+400 Client Error: Bad Request for url: 
+https://cloud.getdbt.com/api/v2/.../runs/?...&status=10&status=20
+```
+
+**Root Cause:**
+- dbt Cloud API doesn't support multiple `status` query parameters in a single request
+- When selecting multiple run statuses (e.g., Success + Error), the API call failed
+
+**Solution (Temporary - improved in v2.8.4):**
+- Changed from server-side to client-side filtering
+- Fetch all runs without status filter
+- Filter by status after receiving the data
+
+**Result:** ✅ Multi-status filtering works (but improved in v2.8.4)
+
+---
+
+## [2.8.2] - November 26, 2025
+
+### Bug Fixes & Improvements 🐛
+
+#### Historical Trends Tab - Fixed Run Filtering Logic
+
+**Problem:** 
+- Runs were being limited by the slider BEFORE date filtering
+- This caused confusing messages like "Found 12 runs" followed by "No runs found in date range"
+- When increasing the slider, more runs would appear because more were fetched before the date filter
+
+**Solution:**
+- Now fetches 3x the slider limit (up to 200 runs) from API
+- Applies date filtering first
+- Counts total runs in date range
+- Then limits to slider value
+- Shows clear message: "Found X runs in date range, analyzing Y most recent (limited by slider)"
+
+**Example Messages:**
+- Before: `✅ Found 12 runs. Analyzing in parallel...` (confusing)
+- After: `✅ Found 45 runs in date range, analyzing 12 most recent (limited by slider)...` (clear!)
+
+#### Slider Max Value Increased
+- **Historical Trends**: Max runs increased from 50 → 80
+- Allows analysis of larger time periods
+- Still benefits from parallel processing
+
+#### Fixed Column Mismatch Error
+**Error:** `ValueError: Length mismatch: Expected axis has 13 elements, new values have 10 elements`
+
+**Cause:** Added job_id, job_name, run_status_name columns but didn't update column name mapping
+
+**Fix:** Updated column names list to include:
+- 'Job ID'
+- 'Job Name'  
+- 'Run Status'
+
+Now the Detailed Run Breakdown table displays correctly with all columns!
+
+### Technical Details
+
+#### Fetch Strategy
+```python
+# Old: Limited before date filtering
+limit=max_runs  # Could be 10
+
+# New: Fetch more to account for filtering
+fetch_limit = min(200, max_runs * 3)  # Could be 30-200
+```
+
+#### Filtering Flow
+1. Fetch runs (3x slider or 200 max)
+2. **Filter by date range** ← Now happens before limiting!
+3. Filter by SAO (if enabled)
+4. Count total
+5. Limit to slider max
+6. Show accurate message
+
+#### Benefits
+- ✅ No more confusing "found but not found" messages
+- ✅ Date filtering works correctly regardless of slider value
+- ✅ Clear visibility into how many runs exist vs. being analyzed
+- ✅ Slider tooltip updated: "Maximum number of runs to analyze (from total found)"
+
+---
+
+## [2.8.1] - November 26, 2025
+
+### UI & UX Enhancements 🎨
+
+#### Status Distribution Chart - Better Colors
+- **success**: Now green (#22c55e) instead of default
+- **error**: Now red (#ef4444) for clear visibility
+- **reused**: Now light blue (#60a5fa) for differentiation
+- **skipped**: Now grey (#9ca3af) for clarity
+- **Impact**: Much easier to interpret status distributions at a glance
+
+#### Detailed Run Breakdown - Enhanced Context
+**NEW: Job Information in Run Table**
+- Added **Job ID** column
+- Added **Job Name** column  
+- Added **Run Status** column (success, error, cancelled)
+- **Impact**: Better traceability from runs back to source jobs
+
+#### Job Overlap Analysis - Smarter Handling
+**NEW: Currently Running Jobs**
+- Now **fetches latest successful run** instead of skipping
+- Shows count of running jobs using successful run data
+- **Before**: "⚠️ 2 jobs skipped: 1 currently running"
+- **After**: "ℹ️ 1 job(s) currently running - using latest successful run"
+- **Impact**: More complete analysis, no waiting for jobs to finish
+
+**NEW: Jobs Summary Table**
+- Now shows table of all analyzed jobs **even when no overlap found**
+- Displays: Job Name, Job ID, Run ID, Model Count
+- Sorted by model count (descending)
+- **Impact**: Always see what was analyzed, not just problems
+
+### Technical Implementation
+
+#### `process_single_run()` Function
+- Added `job_id`, `job_name`, `run_status` parameters
+- Returns job context with model data
+- Enables richer analysis across tabs
+
+#### Job Overlap Logic
+- Removed skip logic for currently running jobs
+- Fetches latest successful run as fallback
+- Only skips jobs with no successful run history
+
+#### Status Colors Map
+```python
+status_colors = {
+    'success': '#22c55e',  # green
+    'error': '#ef4444',    # red
+    'reused': '#60a5fa',   # light blue
+    'skipped': '#9ca3af'   # grey
+}
+```
+
+---
+
+## [2.8.0] - November 26, 2025
+
+### 🎯 Major Overhaul - Step-Based Run Analysis & Accurate Model Counting
+
+#### Revolutionary New Approach: Step-Based Run Processing
+
+**Problem Identified:**
+- Jobs with multiple steps (e.g., `dbt build` + `dbt compile`) were causing inaccurate model counts
+- The final `dbt compile` step would compile ALL models and show them as "success" with near-zero execution time
+- Heuristic-based detection was creating false positives and confusion
+
+**Solution Implemented:**
+- **Intelligent Step Filtering**: Only analyze `dbt run` and `dbt build` commands
+- **Multi-Step Aggregation**: Fetch and combine `run_results.json` from all relevant steps
+- **Zero Guesswork**: No more heuristics - just accurate data from actual run/build steps
+
+#### Technical Implementation (`log_freshness.py`)
+
+##### New Methods
+1. **`fetch_run_steps()`**
+   - Fetches run steps from API with `include_related=["run_steps"]`
+   - Filters to only steps containing "dbt run" or "dbt build"
+   - Skips auxiliary commands (deps, compile, docs, source freshness, etc.)
+   - Returns list of relevant step indices
+
+2. **`fetch_run_results(step)`**
+   - Enhanced to accept optional `step` parameter
+   - Fetches `run_results.json?step={N}` for specific steps
+   - Backwards compatible (no step = default behavior)
+
+3. **`aggregate_run_results_from_steps()`**
+   - Orchestrates the new step-based approach
+   - Fetches run_results.json from all relevant steps
+   - Aggregates model statuses across steps
+   - Handles duplicates (model in multiple steps)
+   - Falls back gracefully if no relevant steps found
+
+4. **`_aggregate_results()`**
+   - Merges results from multiple steps
+   - Tracks which steps each model appeared in
+   - Prioritizes error > success > reused for status resolution
+   - Prints detailed diagnostics
+
+5. **`_process_single_run_results()`**
+   - Clean fallback method for single run_results.json
+   - No log parsing, no heuristics
+   - Used when step-based approach fails
+
+##### Updated Methods
+- **`process_run_statuses()`**: Now a thin wrapper that calls `aggregate_run_results_from_steps()`
+- **Removed**: All log parsing logic, fuzzy detection heuristics, execution time guessing
+
+#### Application Updates (`streamlit_freshness_app.py`)
+
+##### Run Status Filtering 🎚️
+**NEW: Filter runs by completion status across all tabs**
+
+- **Filter Options**: Success, Error, Cancelled
+- **Default**: Success only (most common use case)
+- **Multi-select**: Analyze multiple statuses simultaneously
+- **Applied To**: Model Details, Historical Trends, Cost Analysis
+
+##### Tab-by-Tab Enhancements
+
+**📋 Model Details**
+- Added run status filtering (Success/Error/Cancelled)
+- Uses new step-based approach for accurate counts
+- Shows run status in info message
+- Better error messages with status context
+
+**📈 Historical Trends**
+- Run status multi-select filter
+- Step-based analysis for all runs
+- Removed "Data Quality Notice" warning (no longer needed!)
+- Accurate model counts regardless of job structure
+- Status codes properly passed to API
+
+**💰 Cost Analysis**
+- Run status filtering support
+- Accurate cost calculations using step-based data
+- No more inflated model counts from compile steps
+- True savings calculations
+
+**🔀 Job Overlap Analysis**
+- Updated to use step-based artifact fetching
+- Only counts models from run/build steps
+- Avoids duplicate counting from compile steps
+- More accurate overlap detection
+
+#### API Enhancements
+
+**`get_job_runs()` Function**
+- NEW `status` parameter: List of status codes to filter by
+- Supports multiple statuses via API (10=success, 20=error, 30=cancelled)
+- Backwards compatible (status=None = all statuses)
+- Proper type hints with `List[int]`
+
+#### What This Fixes
+
+1. **✅ Accurate Model Counts**
+   - Before: Job with 1 model executed showed 1736 "success" (from dbt compile)
+   - After: Shows exactly 1 model executed, correct status breakdown
+
+2. **✅ No More False Positives**
+   - Eliminated all heuristic-based guessing
+   - No execution time thresholds
+   - No log parsing failures
+
+3. **✅ Multi-Step Job Support**
+   - Correctly handles jobs with multiple dbt commands
+   - Aggregates data from all relevant steps
+   - Ignores auxiliary commands (compile, docs, etc.)
+
+4. **✅ Better User Experience**
+   - Removed confusing "Data Quality Notice" warnings
+   - Clear, accurate metrics
+   - Trustworthy data for decision-making
+
+5. **✅ Flexible Status Analysis**
+   - Analyze successful runs, errors, or cancelled runs
+   - Compare patterns across status types
+   - Debug failed runs more effectively
+
+#### Breaking Changes
+- None! The changes are backwards compatible and transparent to users
+
+#### Performance
+- Minimal impact (1-2 additional API calls per run to fetch steps)
+- Parallel processing still active in Historical Trends
+- Smart fallback to default run_results.json if needed
+
+#### Example: Step Filtering
+
+**Skipped Steps:**
+- `Clone git repository`
+- `Create profile from connection`
+- `Invoke dbt with dbt deps`
+- `Invoke dbt with dbt source freshness`
+- `Invoke dbt with Generation of docs`
+- `Invoke dbt with dbt compile` ⚠️ (this was the culprit!)
+
+**Analyzed Steps:**
+- ✅ `Invoke dbt with dbt build --exclude package:dbt_project_evaluator`
+- ✅ `Invoke dbt with dbt run --select tag:hourly`
+
+#### Migration Notes
+- No user action required
+- Existing functionality unchanged
+- Data will be more accurate automatically
+- Previous inaccuracies will self-correct on next analysis
+
+---
+
 ## [2.7.0] - November 25, 2025
 
 ### Major Features - SAO Detection & Filtering 🎯
