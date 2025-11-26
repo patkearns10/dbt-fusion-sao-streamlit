@@ -47,14 +47,287 @@ class DBTFreshnessLogger:
         response.raise_for_status()
         return response.json()
     
-    def fetch_run_results(self) -> Dict[str, Any]:
-        """Fetch run_results.json artifact from dbt Cloud."""
+    def fetch_run_results(self, step: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Fetch run_results.json artifact from dbt Cloud.
+        
+        Args:
+            step: Optional step number to fetch results from a specific step
+        
+        Returns:
+            Dictionary containing run results
+        """
         url = f'{self.api_base}/api/v2/accounts/{self.account_id}/runs/{self.run_id}/artifacts/run_results.json'
+        if step is not None:
+            url += f'?step={step}'
         print(f'Fetching run results from: {url}')
         
         response = requests.get(url, headers=self.headers)
         response.raise_for_status()
         return response.json()
+    
+    def fetch_run_steps(self) -> List[Dict[str, Any]]:
+        """
+        Fetch run steps from dbt Cloud API and filter to only dbt run/build commands.
+        
+        Returns:
+            List of relevant run steps (only those with 'dbt run' or 'dbt build')
+        """
+        url = f'{self.api_base}/api/v2/accounts/{self.account_id}/runs/{self.run_id}/'
+        params = {'include_related': '["run_steps"]'}
+        
+        print(f'Fetching run steps from: {url}')
+        response = requests.get(url, headers=self.headers, params=params)
+        response.raise_for_status()
+        
+        data = response.json()
+        all_steps = data.get('data', {}).get('run_steps', [])
+        
+        # Filter to only 'dbt run' and 'dbt build' commands
+        relevant_steps = []
+        for step in all_steps:
+            step_name = step.get('name', '')
+            step_index = step.get('index')
+            
+            # Check if this is a run or build command
+            # Examples: "Invoke dbt with `dbt build ...`" or "Invoke dbt with `dbt run ...`"
+            if 'dbt run' in step_name or 'dbt build' in step_name:
+                relevant_steps.append({
+                    'index': step_index,
+                    'name': step_name,
+                    'status': step.get('status'),
+                    'status_humanized': step.get('status_humanized')
+                })
+                print(f'  ✓ Found relevant step {step_index}: {step_name}')
+            else:
+                print(f'  ⊘ Skipping step {step_index}: {step_name}')
+        
+        print(f'Found {len(relevant_steps)} relevant run/build steps out of {len(all_steps)} total steps')
+        return relevant_steps
+    
+    def aggregate_run_results_from_steps(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Fetch run_results.json from all relevant steps and aggregate the results.
+        This eliminates guesswork by only looking at actual dbt run/build commands.
+        
+        Args:
+            manifest: The manifest.json data
+        
+        Returns:
+            Dictionary with aggregated run status information
+        """
+        # Get relevant run steps (only run/build commands)
+        try:
+            run_steps = self.fetch_run_steps()
+        except Exception as e:
+            print(f'⚠️  Warning: Could not fetch run steps: {e}')
+            print(f'  Falling back to default run_results.json')
+            # Fallback to fetching without step parameter
+            run_results = self.fetch_run_results()
+            return self._process_single_run_results(manifest, run_results)
+        
+        if not run_steps:
+            print('⚠️  No relevant run/build steps found, fetching default run_results.json')
+            run_results = self.fetch_run_results()
+            return self._process_single_run_results(manifest, run_results)
+        
+        # Fetch run_results.json from each relevant step
+        all_results = []
+        for step in run_steps:
+            step_index = step['index']
+            try:
+                print(f'\nFetching run_results.json for step {step_index}: {step["name"]}')
+                run_results = self.fetch_run_results(step=step_index)
+                all_results.append({
+                    'step_index': step_index,
+                    'step_name': step['name'],
+                    'run_results': run_results
+                })
+            except Exception as e:
+                print(f'  ⚠️  Warning: Could not fetch run_results for step {step_index}: {e}')
+                continue
+        
+        # Aggregate results across all steps
+        return self._aggregate_results(manifest, all_results)
+    
+    def _aggregate_results(self, manifest: Dict[str, Any], step_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Aggregate run results from multiple steps.
+        
+        Args:
+            manifest: The manifest.json data
+            step_results: List of step results with run_results.json data
+        
+        Returns:
+            Dictionary with aggregated status information
+        """
+        # Resource types to exclude
+        excluded_types = ['source', 'analysis', 'operation', 'seed', 'snapshot', 'test']
+        
+        # Track all models and their statuses across steps
+        model_statuses = {}  # unique_id -> {status, execution_time, etc.}
+        
+        for step_data in step_results:
+            step_index = step_data['step_index']
+            run_results = step_data['run_results']
+            
+            print(f'\nProcessing results from step {step_index}:')
+            
+            for result in run_results.get('results', []):
+                unique_id = result.get('unique_id')
+                
+                # Look up resource type
+                resource_type = None
+                if unique_id in manifest.get('nodes', {}):
+                    resource_type = manifest['nodes'][unique_id].get('resource_type')
+                
+                # Skip excluded types
+                if not resource_type or resource_type in excluded_types:
+                    continue
+                
+                # Only include models
+                if resource_type != 'model':
+                    continue
+                
+                # Get status directly from run_results (no heuristics!)
+                status = result.get('status')
+                execution_time = result.get('execution_time', 0)
+                
+                # Get timing details
+                timing = result.get('timing', [])
+                started_at = None
+                completed_at = None
+                
+                if timing:
+                    for t in timing:
+                        if t.get('name') == 'execute':
+                            started_at = t.get('started_at')
+                            completed_at = t.get('completed_at')
+                            break
+                
+                # Store or update model data
+                if unique_id not in model_statuses:
+                    model_statuses[unique_id] = {
+                        'unique_id': unique_id,
+                        'name': unique_id.split('.')[-1] if unique_id else 'unknown',
+                        'resource_type': resource_type,
+                        'status': status,
+                        'execution_time': execution_time,
+                        'started_at': started_at,
+                        'completed_at': completed_at,
+                        'steps': [step_index]
+                    }
+                else:
+                    # Model appeared in multiple steps - track it
+                    model_statuses[unique_id]['steps'].append(step_index)
+                    # Keep the most severe status (error > success > reused)
+                    if status == 'error':
+                        model_statuses[unique_id]['status'] = 'error'
+                    elif status == 'success' and model_statuses[unique_id]['status'] != 'error':
+                        model_statuses[unique_id]['status'] = 'success'
+        
+        # Convert to list
+        models_list = list(model_statuses.values())
+        
+        # Print summary diagnostics
+        total_models = len(models_list)
+        status_counts = {}
+        for model in models_list:
+            status_counts[model['status']] = status_counts.get(model['status'], 0) + 1
+        
+        print(f'\n📊 Aggregated Run Status Summary:')
+        print(f'  Total unique models: {total_models}')
+        for status, count in sorted(status_counts.items()):
+            pct = (count / total_models * 100) if total_models > 0 else 0
+            print(f'  {status}: {count} ({pct:.1f}%)')
+        
+        if total_models > 0:
+            execution_times = [m['execution_time'] for m in models_list]
+            avg_time = sum(execution_times) / len(execution_times)
+            sorted_times = sorted(execution_times)
+            median_time = sorted_times[len(sorted_times) // 2] if sorted_times else 0
+            print(f'  Avg execution time: {avg_time:.3f}s')
+            print(f'  Median execution time: {median_time:.3f}s')
+        
+        return {
+            'run_id': self.run_id,
+            'models': models_list
+        }
+    
+    def _process_single_run_results(self, manifest: Dict[str, Any], run_results: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process run results from a single run_results.json file (fallback method).
+        No log parsing, no heuristics - just what's in run_results.json.
+        
+        Args:
+            manifest: The manifest.json data
+            run_results: The run_results.json data
+        
+        Returns:
+            Dictionary with run status information
+        """
+        excluded_types = ['source', 'analysis', 'operation', 'seed', 'snapshot', 'test']
+        
+        models_list = []
+        
+        for result in run_results.get('results', []):
+            unique_id = result.get('unique_id')
+            
+            # Look up resource type
+            resource_type = None
+            if unique_id in manifest.get('nodes', {}):
+                resource_type = manifest['nodes'][unique_id].get('resource_type')
+            
+            # Skip excluded types
+            if not resource_type or resource_type in excluded_types:
+                continue
+            
+            # Only include models
+            if resource_type != 'model':
+                continue
+            
+            # Get status directly from run_results
+            status = result.get('status')
+            execution_time = result.get('execution_time', 0)
+            
+            # Get timing details
+            timing = result.get('timing', [])
+            started_at = None
+            completed_at = None
+            
+            if timing:
+                for t in timing:
+                    if t.get('name') == 'execute':
+                        started_at = t.get('started_at')
+                        completed_at = t.get('completed_at')
+                        break
+            
+            models_list.append({
+                'unique_id': unique_id,
+                'name': unique_id.split('.')[-1] if unique_id else 'unknown',
+                'resource_type': resource_type,
+                'status': status,
+                'execution_time': execution_time,
+                'started_at': started_at,
+                'completed_at': completed_at
+            })
+        
+        # Print summary
+        total_models = len(models_list)
+        status_counts = {}
+        for model in models_list:
+            status_counts[model['status']] = status_counts.get(model['status'], 0) + 1
+        
+        print(f'\n📊 Run Status Summary:')
+        print(f'  Total models: {total_models}')
+        for status, count in sorted(status_counts.items()):
+            pct = (count / total_models * 100) if total_models > 0 else 0
+            print(f'  {status}: {count} ({pct:.1f}%)')
+        
+        return {
+            'run_id': self.run_id,
+            'models': models_list
+        }
     
     def extract_freshness_fields(self, freshness_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -222,192 +495,30 @@ class DBTFreshnessLogger:
         print(f"Would insert {len(rows)} rows to database")
         # TODO: Implement actual database insertion based on your connection type
     
-    def fetch_run_logs(self) -> str:
-        """
-        Fetch run logs from dbt Cloud API.
-        
-        Returns:
-            String containing the run logs
-        """
-        # First get run details to find the run steps
-        url = f'{self.api_base}/api/v2/accounts/{self.account_id}/runs/{self.run_id}/'
-        params = {'include_related': '["run_steps"]'}
-        headers = {'Authorization': f'Token {self.api_key}'}
-        
-        response = requests.get(url, headers=headers, params=params)
-        response.raise_for_status()
-        
-        data = response.json()
-        run_steps = data.get('data', {}).get('run_steps', [])
-        
-        # Find the dbt build/run step (usually has "dbt" in the name)
-        all_logs = []
-        for step in run_steps:
-            step_name = step.get('name', '').lower()
-            # Look for dbt command steps
-            if 'dbt' in step_name or 'invoke' in step_name:
-                logs = step.get('logs', '')
-                if logs:
-                    all_logs.append(logs)
-        
-        return '\n'.join(all_logs)
-    
-    def parse_logs_for_status(self, logs: str, manifest: Dict[str, Any]) -> Dict[str, str]:
-        """
-        Parse dbt logs to extract model execution statuses.
-        
-        Args:
-            logs: Raw log string
-            manifest: Manifest data for model lookup
-            
-        Returns:
-            Dictionary mapping unique_id to status ('success' or 'reused')
-        """
-        import re
-        
-        status_map = {}
-        
-        # Parse logs line by line
-        for line in logs.split('\n'):
-            # Look for "Reused" status
-            # Format: "Reused [  0.51s] model analytics.stg_salesforce__rev_schedules"
-            reused_match = re.search(r'Reused\s+\[\s*[\d.]+s\]\s+model\s+([\w.]+)', line)
-            if reused_match:
-                model_path = reused_match.group(1)
-                # Convert analytics.model_name to model.project.model_name
-                parts = model_path.split('.')
-                if len(parts) >= 2:
-                    model_name = parts[-1]
-                    # Find in manifest
-                    for node_id, node in manifest.get('nodes', {}).items():
-                        if node.get('name') == model_name and node.get('resource_type') == 'model':
-                            status_map[node_id] = 'reused'
-                            break
-            
-            # Look for successful executions
-            # Format: "Completed successfully [  1.23s] model analytics.model_name"
-            success_match = re.search(r'(Completed|OK)\s+(successfully\s+)?\[\s*[\d.]+s\]\s+model\s+([\w.]+)', line)
-            if success_match:
-                model_path = success_match.group(3)
-                parts = model_path.split('.')
-                if len(parts) >= 2:
-                    model_name = parts[-1]
-                    # Find in manifest (only if not already marked as reused)
-                    for node_id, node in manifest.get('nodes', {}).items():
-                        if node.get('name') == model_name and node.get('resource_type') == 'model':
-                            if node_id not in status_map:  # Don't overwrite 'reused'
-                                status_map[node_id] = 'success'
-                            break
-        
-        return status_map
-    
-    def process_run_statuses(self, manifest: Dict[str, Any], run_results: Dict[str, Any]) -> Dict[str, Any]:
+    def process_run_statuses(self, manifest: Dict[str, Any], run_results: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Process run results to extract model execution statuses.
-        Now enhanced with log parsing to detect 'reused' status.
+        
+        This method now uses the new step-based approach:
+        1. Fetches run steps and filters to only 'dbt run' and 'dbt build' commands
+        2. Fetches run_results.json from each relevant step
+        3. Aggregates results across all steps
+        
+        This eliminates all guesswork and heuristics!
         
         Args:
             manifest: The manifest.json data
-            run_results: The run_results.json data
+            run_results: Optional run_results.json data (for backwards compatibility, but ignored)
             
         Returns:
             Dictionary with run status information
         """
-        # Resource types to exclude
-        excluded_types = ['source', 'analysis', 'operation', 'seed', 'snapshot', 'test']
+        print('=' * 80)
+        print('PROCESSING RUN STATUSES (NEW STEP-BASED APPROACH)')
+        print('=' * 80)
         
-        status_data = {
-            'run_id': self.run_id,
-            'run_started_at': run_results.get('metadata', {}).get('generated_at'),
-            'models': []
-        }
-        
-        # Fetch and parse logs to get reused status
-        try:
-            print('Fetching run logs to detect reused models...')
-            logs = self.fetch_run_logs()
-            log_status_map = self.parse_logs_for_status(logs, manifest)
-            reused_count = sum(1 for s in log_status_map.values() if s == "reused")
-            print(f'✓ Log parsing successful: Found {reused_count} reused models in logs')
-            print(f'  Total models in logs: {len(log_status_map)}')
-        except Exception as e:
-            print(f'⚠️  Warning: Could not parse logs: {e}')
-            print(f'  Will use fallback detection based on execution time')
-            log_status_map = {}
-        
-        # Process results
-        for result in run_results.get('results', []):
-            unique_id = result.get('unique_id')
-            
-            # Look up resource type
-            resource_type = None
-            if unique_id in manifest.get('nodes', {}):
-                resource_type = manifest['nodes'][unique_id].get('resource_type')
-            
-            # Skip excluded types (and skip if resource_type is None/unknown)
-            if not resource_type or resource_type in excluded_types:
-                continue
-            
-            # Only include models (most restrictive filter)
-            if resource_type != 'model':
-                continue
-            
-            # Get status from logs if available, otherwise from run_results
-            status = log_status_map.get(unique_id, result.get('status'))
-            execution_time = result.get('execution_time', 0)
-            
-            # FALLBACK: If log parsing didn't find "reused" status, but execution_time is very small
-            # and status is "success", it's likely reused (SAO behavior)
-            if status == 'success' and execution_time < 0.1 and unique_id not in log_status_map:
-                # Very fast "success" with no log entry likely means reused
-                # But only if logs were parsed successfully (non-empty log_status_map)
-                if log_status_map:  # If we have ANY log data
-                    status = 'reused'
-            
-            # Get timing details
-            timing = result.get('timing', [])
-            started_at = None
-            completed_at = None
-            
-            if timing:
-                # Find execute timing
-                for t in timing:
-                    if t.get('name') == 'execute':
-                        started_at = t.get('started_at')
-                        completed_at = t.get('completed_at')
-                        break
-            
-            model_data = {
-                'unique_id': unique_id,
-                'name': unique_id.split('.')[-1] if unique_id else 'unknown',
-                'resource_type': resource_type,
-                'status': status,
-                'execution_time': execution_time,
-                'started_at': started_at,
-                'completed_at': completed_at
-            }
-            
-            status_data['models'].append(model_data)
-        
-        # Print summary diagnostics
-        total_models = len(status_data['models'])
-        status_counts = {}
-        for model in status_data['models']:
-            status_counts[model['status']] = status_counts.get(model['status'], 0) + 1
-        
-        print(f'\n📊 Run Status Summary:')
-        print(f'  Total models in run: {total_models}')
-        for status, count in sorted(status_counts.items()):
-            pct = (count / total_models * 100) if total_models > 0 else 0
-            print(f'  {status}: {count} ({pct:.1f}%)')
-        
-        if total_models > 0:
-            execution_times = [m['execution_time'] for m in status_data['models']]
-            avg_time = sum(execution_times) / len(execution_times)
-            sorted_times = sorted(execution_times)
-            median_time = sorted_times[len(sorted_times) // 2] if sorted_times else 0
-            print(f'  Avg execution time: {avg_time:.3f}s')
-            print(f'  Median execution time: {median_time:.3f}s')
+        # Use the new aggregation method
+        status_data = self.aggregate_run_results_from_steps(manifest)
         
         return status_data
     

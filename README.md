@@ -2,6 +2,27 @@
 
 A Streamlit web application for analyzing dbt freshness configuration and model execution patterns across your dbt Cloud projects.
 
+## ✨ What's New in v2.8.0
+
+### 🎯 Revolutionary Step-Based Run Analysis
+- **Accurate Model Counting**: Intelligently filters to only `dbt run` and `dbt build` steps, ignoring auxiliary commands like `dbt compile`
+- **No More Guesswork**: Eliminated all heuristic-based detection and fuzzy logic
+- **Multi-Step Support**: Correctly aggregates results from jobs with multiple dbt commands
+- **Real Data**: Uses actual run_results.json from relevant steps only
+
+### 🎚️ Run Status Filtering
+- **Filter by Status**: Analyze Success, Error, or Cancelled runs independently
+- **Multi-Select**: Combine multiple statuses for comprehensive analysis
+- **Available In**: Model Details, Historical Trends, Cost Analysis tabs
+
+### 🔍 What This Fixes
+Before: A job that ran 1 model showed 1736 "success" models (due to final `dbt compile` step)
+After: Shows exactly 1 model executed with correct status breakdown
+
+No more confusing warnings, no more inflated counts - just accurate, trustworthy data!
+
+---
+
 ## 🚀 Quick Start
 
 ### 1. Install Dependencies
@@ -73,10 +94,15 @@ One-time setup for your dbt Cloud credentials and default job settings.
 ### Tab 3: 📋 Model Details
 
 **Deep dive into individual model configurations** from job manifest:
+- **Flexible Source Selection**:
+  - Environment (Latest): Get latest run from environment automatically
+  - Specific Job ID: Analyze a particular job's latest run
+  - Specific Run ID: Direct run analysis
+- **NEW: Run Status Filtering** - Choose Success, Error, or Cancelled runs
+- **Job Type Filtering** - Filter to ci, merge, scheduled, or other jobs
 - Model-by-model freshness configuration
 - `warn_after`, `error_after`, `build_after` settings
 - Source and model identification
-- Filter and search capabilities
 - Export detailed reports
 
 **Perfect for**: Configuration audits, troubleshooting specific models, compliance documentation
@@ -87,6 +113,10 @@ One-time setup for your dbt Cloud credentials and default job settings.
 
 **Analyze performance patterns** across multiple job runs over time:
 - **⚡ Parallel processing**: Analyzes up to 10 runs simultaneously for 5-10x faster results
+- **NEW: Run Status Filtering** - Analyze Success, Error, or Cancelled runs independently
+- **Environment-Wide or Job-Specific**: Choose all jobs in environment or filter to one
+- **Job Type Filtering** - Filter to ci, merge, scheduled, or other jobs
+- **SAO Jobs Only** - Focus on State-Aware Orchestration jobs for accurate reuse metrics
 - **Reuse Rate Trending**: Track reuse percentage over time with trend line
 - **Goal Visualization**: 30% reuse goal line on charts
 - **Trend Statistics**: Average, peak, and lowest reuse rates  
@@ -100,11 +130,15 @@ One-time setup for your dbt Cloud credentials and default job settings.
 
 **Note**: Best with 20-50 runs for meaningful trends
 
-### Tab 5: 💰 Cost Analysis (NEW!)
+### Tab 5: 💰 Cost Analysis
 
 **Quantify the financial impact** of your dbt optimization efforts:
+- **NEW: Run Status Filtering** - Analyze costs for Success, Error, or Cancelled runs
+- **Environment-Wide or Job-Specific**: Choose all jobs in environment or filter to one
+- **Job Type Filtering** - Filter to ci, merge, scheduled, or other jobs
+- **SAO Jobs Only** - Focus on SAO jobs for accurate cost/reuse metrics
 - **Cost Estimation**: Calculate costs based on execution time and warehouse type
-- **Savings from Reuse**: Show money saved from cache hits  
+- **Savings from Reuse**: Show money saved from cache hits using actual execution times
 - **ROI Analysis**: Measure return on investment from freshness configurations
 - **Cost Trends**: Visualize cost patterns over time
 - **Top Expensive Models**: Identify the 20 most costly models
@@ -194,15 +228,23 @@ One-time setup for your dbt Cloud credentials and default job settings.
 - **Parallel processing enabled**: Up to 10 runs analyzed simultaneously
 - **Recommended**: 20-50 runs for comprehensive analysis (only takes 10-20 seconds)
 - **Date range**: Use 14-30 days for trending analysis
-- Each run requires 3 API calls (run metadata, manifest, logs) - done in parallel
+- Each run requires 2-4 API calls (run metadata, manifest, run_results.json per step) - done in parallel
 - 20 runs typically takes ~10-15 seconds (vs 60-100 seconds sequential)
 
 ### Understanding Run Statuses
 
-The app parses dbt Cloud logs to extract accurate statuses:
+The app uses a **step-based approach** to get accurate statuses from `run_results.json`:
+
+1. **Filters to relevant steps**: Only analyzes `dbt run` and `dbt build` commands
+2. **Fetches run_results.json**: Gets actual execution results from each step  
+3. **Aggregates results**: Combines data across steps for complete accuracy
+
+**Status values:**
 - **success**: Model executed successfully
-- **reused**: Model was reused from cache (incremental/deferred)
+- **skipped**: Model was skipped (often due to deferral/reuse in SAO jobs)
 - **error**: Model execution failed
+
+This approach eliminates all guesswork and heuristics - we use dbt's actual execution status!
 
 ## 🐛 Troubleshooting
 
