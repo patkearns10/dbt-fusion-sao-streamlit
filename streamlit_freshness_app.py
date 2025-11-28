@@ -868,31 +868,53 @@ def show_freshness_analysis():
             # Detailed results
             st.header("📋 Detailed Results")
             
-            # Convert results to DataFrame
+            # Convert to DataFrame
             df = pd.DataFrame(results)
             
-            # Filter to main project only (exclude dbt packages)
-            if 'package_name' in df.columns:
-                df = filter_to_main_project(df, package_column='package_name')
-            
             # Add filters
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             
             with col1:
+                # Get unique projects/packages
+                if 'package_name' in df.columns:
+                    unique_projects = sorted(df['package_name'].dropna().unique())
+                    project_filter = st.multiselect(
+                        "Filter by Project/Package",
+                        options=unique_projects,
+                        default=unique_projects,
+                        help="Select which projects/packages to include"
+                    )
+                else:
+                    project_filter = None
+            
+            with col2:
                 resource_filter = st.multiselect(
                     "Filter by Resource Type",
                     options=sorted(df['resource_type'].unique()),
                     default=df['resource_type'].unique()
                 )
             
-            with col2:
+            with col3:
                 has_freshness = st.selectbox(
                     "Has Freshness Config",
                     options=["All", "Yes", "No"]
                 )
             
+            # Add grouping option
+            group_by_project = False
+            if 'package_name' in df.columns:
+                group_by_project = st.checkbox(
+                    "📦 Group by Project/Package",
+                    value=False,
+                    help="Group models by their project/package"
+                )
+            
             # Apply filters
             filtered_df = df[df['resource_type'].isin(resource_filter)]
+            
+            # Apply project filter
+            if project_filter is not None and 'package_name' in df.columns:
+                filtered_df = filtered_df[filtered_df['package_name'].isin(project_filter)]
             
             if has_freshness == "Yes":
                 filtered_df = filtered_df[filtered_df['is_freshness_configured'] == True]
@@ -902,30 +924,68 @@ def show_freshness_analysis():
             # Format the dataframe for display
             display_df = filtered_df.copy()
             
-            # Reorder columns for better display
-            display_columns = [
-                'name', 'resource_type', 'is_freshness_configured',
+            # Reorder columns for better display (include package_name if available)
+            display_columns = ['name', 'resource_type']
+            if 'package_name' in display_df.columns:
+                display_columns.append('package_name')
+            display_columns.extend([
+                'is_freshness_configured',
                 'warn_after_count', 'warn_after_period',
                 'error_after_count', 'error_after_period',
                 'build_after_count', 'build_after_period',
                 'updates_on', 'unique_id'
-            ]
-            display_df = display_df[display_columns]
+            ])
+            display_df = display_df[[col for col in display_columns if col in display_df.columns]]
             
             # Rename columns for better display
-            display_df.columns = [
-                'Name', 'Resource Type', 'Has Freshness',
-                'Warn Count', 'Warn Period',
-                'Error Count', 'Error Period',
-                'Build Count', 'Build Period',
-                'Updates On', 'Unique ID'
-            ]
+            column_rename = {
+                'name': 'Name',
+                'resource_type': 'Resource Type',
+                'package_name': 'Project/Package',
+                'is_freshness_configured': 'Has Freshness',
+                'warn_after_count': 'Warn Count',
+                'warn_after_period': 'Warn Period',
+                'error_after_count': 'Error Count',
+                'error_after_period': 'Error Period',
+                'build_after_count': 'Build Count',
+                'build_after_period': 'Build Period',
+                'updates_on': 'Updates On',
+                'unique_id': 'Unique ID'
+            }
+            display_df = display_df.rename(columns=column_rename)
             
-            st.dataframe(
-                display_df,
-                width='stretch',
-                hide_index=True
-            )
+            # Display with or without grouping
+            if group_by_project and 'Project/Package' in display_df.columns:
+                st.markdown("### Results Grouped by Project/Package")
+                
+                # Group by project and display each group
+                for project in sorted(display_df['Project/Package'].dropna().unique()):
+                    project_df = display_df[display_df['Project/Package'] == project].copy()
+                    
+                    with st.expander(f"📦 **{project}** ({len(project_df)} items)", expanded=True):
+                        # Show project-specific stats
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Total Items", len(project_df))
+                        with col2:
+                            has_freshness_count = project_df['Has Freshness'].sum() if 'Has Freshness' in project_df.columns else 0
+                            st.metric("With Freshness", has_freshness_count)
+                        with col3:
+                            freshness_pct = (has_freshness_count / len(project_df) * 100) if len(project_df) > 0 else 0
+                            st.metric("Coverage", f"{freshness_pct:.1f}%")
+                        
+                        # Show the dataframe
+                        st.dataframe(
+                            project_df,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+            else:
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
             
             st.info(f"Showing {len(filtered_df)} of {len(df)} items")
             
@@ -1806,9 +1866,6 @@ def show_model_reuse_slo_analysis():
             (df['expected_hours_between_runs'].notna())
         )
         
-        # Filter to main project only (exclude dbt packages)
-        df_filtered = filter_to_main_project(df, package_column='packageName')
-        
         # Display key metrics
         st.divider()
         st.subheader("🎯 Key Metrics")
@@ -1816,33 +1873,500 @@ def show_model_reuse_slo_analysis():
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            total_models = len(df_filtered)
+            total_models = len(df)
             st.metric("Total Models", f"{total_models:,}")
         
         with col2:
             # Calculate reuse rate (models with 'reused' status)
-            reused_count = len(df_filtered[df_filtered['last_run_status'] == 'reused'])
+            reused_count = len(df[df['last_run_status'] == 'reused'])
             reuse_pct = (reused_count / total_models * 100) if total_models > 0 else 0
             st.metric("Reuse Rate", f"{reuse_pct:.1f}%", delta=f"{reused_count:,} models")
         
         with col3:
             # Models with freshness config
-            has_freshness = df_filtered['build_after_count'].notna().sum()
+            has_freshness = df['build_after_count'].notna().sum()
             freshness_pct = (has_freshness / total_models * 100) if total_models > 0 else 0
             st.metric("Has Freshness Config", f"{freshness_pct:.1f}%", delta=f"{has_freshness:,} models")
         
         with col4:
             # Models outside SLO
-            outside_slo = df_filtered['is_outside_of_slo'].sum()
+            outside_slo = df['is_outside_of_slo'].sum()
             slo_pct = (outside_slo / total_models * 100) if total_models > 0 else 0
             st.metric("Outside SLO", f"{slo_pct:.1f}%", delta=f"{outside_slo:,} models")
+        
+        # State-Aware Orchestration analysis
+        st.divider()
+        st.subheader("🔄 State-Aware Orchestration (SAO) Adoption")
+        
+        with st.spinner("🔄 Analyzing jobs for SAO features..."):
+            # Fetch all jobs for this environment
+            jobs_url = f'{config["api_base"]}/api/v2/accounts/{config["account_id"]}/jobs/'
+            headers = {'Authorization': f'Token {config["api_key"]}'}
+            params = {'limit': 100, 'environment_id': environment_id}
+            
+            try:
+                jobs_response = requests.get(jobs_url, headers=headers, params=params)
+                jobs_response.raise_for_status()
+                jobs = jobs_response.json().get('data', [])
+                
+                if jobs:
+                    # Count SAO-enabled jobs
+                    sao_jobs = [job for job in jobs if check_job_has_sao(job)]
+                    total_jobs = len(jobs)
+                    sao_count = len(sao_jobs)
+                    sao_pct = (sao_count / total_jobs * 100) if total_jobs > 0 else 0
+                    
+                    # Display metrics
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric("Total Jobs", f"{total_jobs:,}")
+                    
+                    with col2:
+                        st.metric("SAO-Enabled Jobs", f"{sao_count:,}", delta=f"{sao_pct:.1f}%")
+                    
+                    with col3:
+                        st.metric("Non-SAO Jobs", f"{total_jobs - sao_count:,}", delta=f"{100 - sao_pct:.1f}%")
+                    
+                    # Create visualization
+                    st.markdown("#### SAO Adoption Distribution")
+                    
+                    # Prepare data for chart
+                    chart_data = pd.DataFrame({
+                        'Category': ['SAO-Enabled', 'Non-SAO'],
+                        'Count': [sao_count, total_jobs - sao_count],
+                        'Percentage': [sao_pct, 100 - sao_pct]
+                    })
+                    
+                    # Create two columns for charts
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Pie chart
+                        fig_pie = px.pie(
+                            chart_data, 
+                            values='Count', 
+                            names='Category',
+                            title='SAO Adoption by Job Count',
+                            color='Category',
+                            color_discrete_map={'SAO-Enabled': '#10b981', 'Non-SAO': '#6b7280'},
+                            hole=0.4
+                        )
+                        fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+                        st.plotly_chart(fig_pie, use_container_width=True)
+                    
+                    with col2:
+                        # Bar chart
+                        fig_bar = px.bar(
+                            chart_data,
+                            x='Category',
+                            y='Count',
+                            title='SAO Adoption by Job Count',
+                            color='Category',
+                            color_discrete_map={'SAO-Enabled': '#10b981', 'Non-SAO': '#6b7280'},
+                            text='Count'
+                        )
+                        fig_bar.update_traces(textposition='outside')
+                        fig_bar.update_layout(showlegend=False, yaxis_title='Number of Jobs')
+                        st.plotly_chart(fig_bar, use_container_width=True)
+                    
+                    # Scheduled Jobs SAO Analysis
+                    st.markdown("---")
+                    st.markdown("#### SAO Adoption for Scheduled Jobs")
+                    
+                    scheduled_jobs = [job for job in jobs if determine_job_type(job.get('triggers', {})) == 'scheduled']
+                    
+                    if scheduled_jobs:
+                        scheduled_sao_jobs = [job for job in scheduled_jobs if check_job_has_sao(job)]
+                        total_scheduled = len(scheduled_jobs)
+                        scheduled_sao_count = len(scheduled_sao_jobs)
+                        scheduled_sao_pct = (scheduled_sao_count / total_scheduled * 100) if total_scheduled > 0 else 0
+                        
+                        col1, col2 = st.columns([1, 2])
+                        
+                        with col1:
+                            # Metrics for scheduled jobs
+                            st.metric("Total Scheduled Jobs", f"{total_scheduled:,}")
+                            st.metric("SAO-Enabled", f"{scheduled_sao_count:,}", delta=f"{scheduled_sao_pct:.1f}%")
+                            st.metric("Non-SAO", f"{total_scheduled - scheduled_sao_count:,}", delta=f"{100 - scheduled_sao_pct:.1f}%")
+                        
+                        with col2:
+                            # Pie chart for scheduled jobs
+                            scheduled_chart_data = pd.DataFrame({
+                                'Category': ['SAO-Enabled', 'Non-SAO'],
+                                'Count': [scheduled_sao_count, total_scheduled - scheduled_sao_count],
+                                'Percentage': [scheduled_sao_pct, 100 - scheduled_sao_pct]
+                            })
+                            
+                            fig_scheduled_pie = px.pie(
+                                scheduled_chart_data,
+                                values='Count',
+                                names='Category',
+                                title=f'SAO Adoption for Scheduled Jobs ({total_scheduled} total)',
+                                color='Category',
+                                color_discrete_map={'SAO-Enabled': '#10b981', 'Non-SAO': '#6b7280'},
+                                hole=0.4
+                            )
+                            fig_scheduled_pie.update_traces(textposition='inside', textinfo='percent+label+value')
+                            st.plotly_chart(fig_scheduled_pie, use_container_width=True)
+                        
+                        # Show recommendation if scheduled SAO adoption is low
+                        if scheduled_sao_pct < 50:
+                            st.warning(f"""
+                            ⚠️ **Low SAO Adoption in Scheduled Jobs**: Only **{scheduled_sao_pct:.1f}%** ({scheduled_sao_count}/{total_scheduled}) of your scheduled production jobs use SAO.
+                            
+                            Scheduled jobs typically benefit most from SAO since they run repeatedly on the same data.
+                            """)
+                    else:
+                        st.info("No scheduled jobs found in this environment")
+                    
+                    # ========== NEW FEATURE 1: Job Type Breakdown ==========
+                    st.markdown("---")
+                    st.markdown("#### SAO Adoption by Job Type")
+                    st.markdown("Compare SAO adoption across CI, Merge, Scheduled, and Other job types")
+                    
+                    # Categorize all jobs by type and SAO status
+                    job_type_breakdown = {
+                        'ci': {'sao': 0, 'non_sao': 0},
+                        'merge': {'sao': 0, 'non_sao': 0},
+                        'scheduled': {'sao': 0, 'non_sao': 0},
+                        'other': {'sao': 0, 'non_sao': 0}
+                    }
+                    
+                    for job in jobs:
+                        job_type = determine_job_type(job.get('triggers', {}))
+                        has_sao = check_job_has_sao(job)
+                        
+                        if has_sao:
+                            job_type_breakdown[job_type]['sao'] += 1
+                        else:
+                            job_type_breakdown[job_type]['non_sao'] += 1
+                    
+                    # Create DataFrame for visualization
+                    breakdown_data = []
+                    for job_type, counts in job_type_breakdown.items():
+                        total = counts['sao'] + counts['non_sao']
+                        if total > 0:  # Only include types that exist
+                            breakdown_data.append({
+                                'Job Type': job_type.upper(),
+                                'SAO-Enabled': counts['sao'],
+                                'Non-SAO': counts['non_sao'],
+                                'Total': total,
+                                'SAO %': (counts['sao'] / total * 100) if total > 0 else 0
+                            })
+                    
+                    if breakdown_data:
+                        breakdown_df = pd.DataFrame(breakdown_data)
+                        
+                        # Create grouped bar chart
+                        fig_breakdown = go.Figure()
+                        
+                        fig_breakdown.add_trace(go.Bar(
+                            name='SAO-Enabled',
+                            x=breakdown_df['Job Type'],
+                            y=breakdown_df['SAO-Enabled'],
+                            marker_color='#10b981',
+                            text=breakdown_df['SAO-Enabled'],
+                            textposition='auto',
+                        ))
+                        
+                        fig_breakdown.add_trace(go.Bar(
+                            name='Non-SAO',
+                            x=breakdown_df['Job Type'],
+                            y=breakdown_df['Non-SAO'],
+                            marker_color='#6b7280',
+                            text=breakdown_df['Non-SAO'],
+                            textposition='auto',
+                        ))
+                        
+                        fig_breakdown.update_layout(
+                            title='SAO Adoption by Job Type',
+                            xaxis_title='Job Type',
+                            yaxis_title='Number of Jobs',
+                            barmode='group',
+                            height=400,
+                            showlegend=True,
+                            legend=dict(
+                                orientation="h",
+                                yanchor="bottom",
+                                y=1.02,
+                                xanchor="right",
+                                x=1
+                            )
+                        )
+                        
+                        st.plotly_chart(fig_breakdown, use_container_width=True)
+                        
+                        # Show summary table with percentages
+                        col1, col2 = st.columns([2, 1])
+                        
+                        with col1:
+                            st.dataframe(
+                                breakdown_df.style.format({
+                                    'SAO %': '{:.1f}%'
+                                }),
+                                use_container_width=True,
+                                hide_index=True
+                            )
+                        
+                        with col2:
+                            # Highlight key insights
+                            ci_jobs = breakdown_df[breakdown_df['Job Type'] == 'CI']
+                            if not ci_jobs.empty and ci_jobs.iloc[0]['SAO %'] < 50:
+                                st.warning("⚠️ **CI Jobs**: Low SAO adoption. CI jobs benefit greatly from SAO!")
+                            
+                            merge_jobs = breakdown_df[breakdown_df['Job Type'] == 'MERGE']
+                            if not merge_jobs.empty and merge_jobs.iloc[0]['SAO %'] < 50:
+                                st.warning("⚠️ **Merge Jobs**: Consider enabling SAO for faster deploys")
+                    
+                    # ========== NEW FEATURE 2: Freshness Config Coverage ==========
+                    st.markdown("---")
+                    st.markdown("#### Freshness Configuration Coverage")
+                    st.markdown("SAO works best when models have freshness configs. Identify misconfigurations:")
+                    
+                    # Analyze freshness config for each job
+                    jobs_sao_no_freshness = []
+                    jobs_freshness_no_sao = []
+                    jobs_both = []
+                    jobs_neither = []
+                    
+                    with st.spinner("🔄 Analyzing job configurations..."):
+                        for job in jobs:
+                            job_id = job['id']
+                            job_name = job['name']
+                            job_type = determine_job_type(job.get('triggers', {}))
+                            has_sao = check_job_has_sao(job)
+                            
+                            # Check if job has any freshness-related settings
+                            # We'll check the execute_steps for freshness-related commands
+                            execute_steps = job.get('execute_steps', [])
+                            has_freshness = any('freshness' in str(step).lower() for step in execute_steps)
+                            
+                            # Also check settings for common freshness indicators
+                            settings = job.get('settings', {})
+                            if not has_freshness:
+                                # Check for dbt build command which respects freshness
+                                has_freshness = any('dbt build' in str(step) for step in execute_steps)
+                            
+                            job_info = {
+                                'Job ID': job_id,
+                                'Job Name': job_name,
+                                'Job Type': job_type.upper(),
+                            }
+                            
+                            if has_sao and has_freshness:
+                                jobs_both.append(job_info)
+                            elif has_sao and not has_freshness:
+                                jobs_sao_no_freshness.append(job_info)
+                            elif not has_sao and has_freshness:
+                                jobs_freshness_no_sao.append(job_info)
+                            else:
+                                jobs_neither.append(job_info)
+                    
+                    # Create summary metrics
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric("✅ Both SAO & Freshness", len(jobs_both), help="Optimal configuration")
+                    
+                    with col2:
+                        st.metric("⚠️ SAO without Freshness", len(jobs_sao_no_freshness), help="May not reuse effectively")
+                    
+                    with col3:
+                        st.metric("💡 Freshness without SAO", len(jobs_freshness_no_sao), help="Missing optimization")
+                    
+                    with col4:
+                        st.metric("❌ Neither", len(jobs_neither), help="Basic configuration")
+                    
+                    # Visual breakdown
+                    config_data = pd.DataFrame({
+                        'Configuration': [
+                            '✅ Both',
+                            '⚠️ SAO Only',
+                            '💡 Freshness Only',
+                            '❌ Neither'
+                        ],
+                        'Count': [
+                            len(jobs_both),
+                            len(jobs_sao_no_freshness),
+                            len(jobs_freshness_no_sao),
+                            len(jobs_neither)
+                        ],
+                        'Status': ['Optimal', 'Suboptimal', 'Opportunity', 'Basic']
+                    })
+                    
+                    fig_config = px.bar(
+                        config_data,
+                        x='Configuration',
+                        y='Count',
+                        title='Job Configuration Coverage',
+                        color='Status',
+                        color_discrete_map={
+                            'Optimal': '#10b981',
+                            'Suboptimal': '#f59e0b',
+                            'Opportunity': '#3b82f6',
+                            'Basic': '#6b7280'
+                        },
+                        text='Count'
+                    )
+                    fig_config.update_traces(textposition='outside')
+                    fig_config.update_layout(showlegend=True, yaxis_title='Number of Jobs', height=400)
+                    st.plotly_chart(fig_config, use_container_width=True)
+                    
+                    # Show problematic configurations in expanders
+                    if jobs_sao_no_freshness:
+                        with st.expander(f"⚠️ {len(jobs_sao_no_freshness)} Jobs with SAO but NO Freshness Config (May Not Reuse!)"):
+                            st.warning("These jobs have SAO enabled but may not use freshness checks. Without freshness configs, models may not reuse effectively.")
+                            st.dataframe(pd.DataFrame(jobs_sao_no_freshness), use_container_width=True, hide_index=True)
+                    
+                    if jobs_freshness_no_sao:
+                        with st.expander(f"💡 {len(jobs_freshness_no_sao)} Jobs with Freshness but NO SAO (Optimization Opportunity!)"):
+                            st.info("These jobs check freshness but don't have SAO enabled. Enable SAO to skip unchanged models and reduce costs.")
+                            st.dataframe(pd.DataFrame(jobs_freshness_no_sao), use_container_width=True, hide_index=True)
+                    
+                    # ========== NEW FEATURE 3: Top Opportunities ==========
+                    st.markdown("---")
+                    st.markdown("#### 🎯 Top Opportunities: Jobs That Should Enable SAO")
+                    st.markdown("Prioritize enabling SAO on these jobs for maximum impact:")
+                    
+                    # Fetch run data for non-SAO jobs to calculate potential impact
+                    non_sao_jobs = [job for job in jobs if not check_job_has_sao(job)]
+                    
+                    if non_sao_jobs:
+                        opportunities = []
+                        
+                        with st.spinner(f"🔄 Analyzing {len(non_sao_jobs)} non-SAO jobs for optimization potential..."):
+                            for job in non_sao_jobs[:20]:  # Limit to top 20 for performance
+                                job_id = job['id']
+                                job_name = job['name']
+                                job_type = determine_job_type(job.get('triggers', {}))
+                                
+                                try:
+                                    # Fetch recent runs for this job
+                                    runs_url = f'{config["api_base"]}/api/v2/accounts/{config["account_id"]}/runs/'
+                                    run_params = {
+                                        'job_definition_id': job_id,
+                                        'limit': 10,
+                                        'order_by': '-id',
+                                        'status': '10'  # Success only
+                                    }
+                                    
+                                    runs_response = requests.get(runs_url, headers=headers, params=run_params)
+                                    runs_response.raise_for_status()
+                                    runs = runs_response.json().get('data', [])
+                                    
+                                    if runs:
+                                        # Calculate metrics
+                                        run_count = len(runs)
+                                        avg_duration = sum(r.get('duration_humanized_seconds', 0) or 0 for r in runs) / run_count if run_count > 0 else 0
+                                        avg_duration_mins = avg_duration / 60
+                                        
+                                        # Calculate potential impact score
+                                        # Higher score = more frequent + longer running = bigger opportunity
+                                        impact_score = run_count * avg_duration_mins
+                                        
+                                        # Priority based on job type
+                                        priority = 'High' if job_type in ['ci', 'merge'] else 'Medium' if job_type == 'scheduled' else 'Low'
+                                        
+                                        opportunities.append({
+                                            'Job ID': job_id,
+                                            'Job Name': job_name,
+                                            'Job Type': job_type.upper(),
+                                            'Recent Runs': run_count,
+                                            'Avg Duration (min)': round(avg_duration_mins, 2),
+                                            'Impact Score': round(impact_score, 2),
+                                            'Priority': priority
+                                        })
+                                
+                                except Exception as e:
+                                    # Skip jobs that error
+                                    continue
+                        
+                        if opportunities:
+                            opp_df = pd.DataFrame(opportunities)
+                            # Sort by impact score (descending)
+                            opp_df = opp_df.sort_values('Impact Score', ascending=False)
+                            
+                            # Show top 10
+                            st.markdown("**Top 10 Jobs by Potential Impact:**")
+                            
+                            # Style the dataframe with colored text instead of highlighting
+                            def color_priority(row):
+                                if row['Priority'] == 'High':
+                                    return ['color: #dc2626; font-weight: bold'] * len(row)  # Red text
+                                elif row['Priority'] == 'Medium':
+                                    return ['color: #d97706; font-weight: bold'] * len(row)  # Orange text
+                                else:
+                                    return ['color: #6b7280'] * len(row)  # Gray text
+                            
+                            styled_df = opp_df.head(10).style.apply(color_priority, axis=1)
+                            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                            
+                            # Show calculation explanation
+                            st.info("""
+                            **Impact Score Calculation**: `Recent Runs × Avg Duration (minutes)`
+                            
+                            Higher scores indicate jobs that run frequently and take longer, making them prime candidates for SAO optimization.
+                            
+                            **Priority Levels:**
+                            - 🔴 **High**: CI and Merge jobs (run most frequently)
+                            - 🟡 **Medium**: Scheduled jobs (regular cadence)
+                            - ⚪ **Low**: Other job types
+                            """)
+                            
+                            # Estimated savings
+                            total_impact = opp_df['Impact Score'].sum()
+                            st.success(f"""
+                            **💰 Estimated Opportunity**: If SAO reduces run time by 30-50% on these jobs:
+                            - Potential time savings: **{total_impact * 0.4:.0f} minutes** across recent runs
+                            - Focus on high-impact jobs first for maximum ROI
+                            """)
+                        else:
+                            st.info("No run data available for non-SAO jobs to calculate opportunities")
+                    else:
+                        st.success("🎉 All jobs have SAO enabled! No optimization opportunities.")
+                    
+                    # Show list of all jobs with SAO status in expander
+                    if jobs:
+                        with st.expander(f"📋 View All {len(jobs)} Jobs (SAO Status)"):
+                            all_jobs_df = pd.DataFrame([
+                                {
+                                    'Job ID': job['id'],
+                                    'Job Name': job['name'],
+                                    'Job Type': determine_job_type(job.get('triggers', {})),
+                                    'SAO Enabled': '✅ Yes' if check_job_has_sao(job) else '❌ No',
+                                    'Environment ID': job.get('environment_id')
+                                }
+                                for job in jobs
+                            ])
+                            # Sort by SAO status (enabled first) then by job name
+                            all_jobs_df = all_jobs_df.sort_values(['SAO Enabled', 'Job Name'], ascending=[False, True])
+                            st.dataframe(all_jobs_df, use_container_width=True, hide_index=True)
+                    
+                    # Show recommendations if SAO adoption is low
+                    if sao_pct < 50:
+                        st.info(f"""
+                        💡 **Recommendation**: Consider enabling State-Aware Orchestration (SAO) on more jobs to improve efficiency.
+                        
+                        Current adoption: **{sao_pct:.1f}%** ({sao_count}/{total_jobs} jobs)
+                        
+                        SAO benefits:
+                        - Skips unchanged models, reducing compute costs
+                        - Faster run times by only building what's necessary
+                        - Better resource utilization across your environment
+                        """)
+                else:
+                    st.warning("No jobs found for this environment")
+                    
+            except requests.exceptions.RequestException as e:
+                st.error(f"❌ Error fetching jobs: {str(e)}")
         
         # TODO 1: SLO Compliance Table
         st.divider()
         st.subheader("📊 SLO Compliance Table")
         
         # Create display table
-        display_df = df_filtered[[
+        display_df = df[[
             'name', 'packageName', 'resourceType', 'last_run_generated_at',
             'execute_completed_at', 'hours_since_last_execution', 'last_run_status',
             'last_job_id', 'last_run_id', 'build_after_count', 'build_after_period',
@@ -1867,7 +2391,7 @@ def show_model_reuse_slo_analysis():
         with col1:
             status_filter = st.multiselect(
                 "Filter by Status",
-                options=sorted(df_filtered['last_run_status'].dropna().unique()),
+                options=sorted(df['last_run_status'].dropna().unique()),
                 default=None,
                 key="reuse_status_filter"
             )
@@ -1919,7 +2443,7 @@ def show_model_reuse_slo_analysis():
         st.subheader("📈 Model Distribution by Build After Configuration")
         
         # Filter models with freshness config
-        models_with_config = df_filtered[df_filtered['build_after_count'].notna()].copy()
+        models_with_config = df[df['build_after_count'].notna()].copy()
         
         if len(models_with_config) > 0:
             # Create a combined label for build_after
@@ -1978,7 +2502,7 @@ def show_model_reuse_slo_analysis():
         st.subheader("🔄 Distribution of Statuses (Reused vs Success vs Error)")
         
         # Count by status
-        status_counts = df_filtered['last_run_status'].value_counts().reset_index()
+        status_counts = df['last_run_status'].value_counts().reset_index()
         status_counts.columns = ['Status', 'Count']
         
         col1, col2 = st.columns(2)
@@ -2040,8 +2564,8 @@ def show_model_reuse_slo_analysis():
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            reused_models = len(df_filtered[df_filtered['last_run_status'] == 'reused'])
-            total = len(df_filtered)
+            reused_models = len(df[df['last_run_status'] == 'reused'])
+            total = len(df)
             reuse_rate = (reused_models / total * 100) if total > 0 else 0
             
             st.metric(
@@ -2061,7 +2585,7 @@ def show_model_reuse_slo_analysis():
                 st.warning(f"⚠️ **Below typical range** (target is 30%)")
         
         with col2:
-            success_models = len(df_filtered[df_filtered['last_run_status'] == 'success'])
+            success_models = len(df[df['last_run_status'] == 'success'])
             success_rate = (success_models / total * 100) if total > 0 else 0
             
             st.metric(
@@ -2071,7 +2595,7 @@ def show_model_reuse_slo_analysis():
             )
         
         with col3:
-            error_models = len(df_filtered[df_filtered['last_run_status'] == 'error'])
+            error_models = len(df[df['last_run_status'] == 'error'])
             error_rate = (error_models / total * 100) if total > 0 else 0
             
             st.metric(
@@ -2112,7 +2636,7 @@ def show_model_reuse_slo_analysis():
         st.divider()
         st.subheader("💾 Download Data")
         
-        csv = df_filtered.to_csv(index=False)
+        csv = df.to_csv(index=False)
         st.download_button(
             label="📥 Download Full Analysis as CSV",
             data=csv,
@@ -2686,44 +3210,6 @@ def show_cost_analysis():
         
         fig_top.update_layout(height=600, showlegend=False)
         st.plotly_chart(fig_top, use_container_width=True)
-        
-        # Cost breakdown by status
-        st.divider()
-        st.subheader("💸 Cost Distribution by Status")
-        
-        status_costs = df.groupby('status').agg({
-            'cost': 'sum',
-            'unique_id': 'count'
-        }).reset_index()
-        status_costs.columns = ['Status', 'Total Cost', 'Executions']
-        status_costs['Pct of Total'] = (status_costs['Total Cost'] / status_costs['Total Cost'].sum() * 100).round(1)
-        
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            fig_cost_breakdown = px.pie(
-                status_costs,
-                names='Status',
-                values='Total Cost',
-                title='Cost Distribution by Status',
-                color='Status',
-                color_discrete_map={
-                    'success': '#dc3545',
-                    'reused': '#28a745',
-                    'error': '#ffc107',
-                    'skipped': '#17a2b8'
-                }
-            )
-            st.plotly_chart(fig_cost_breakdown, use_container_width=True)
-        
-        with col2:
-            # Show table
-            status_costs_display = status_costs.copy()
-            status_costs_display['Total Cost'] = status_costs_display['Total Cost'].apply(lambda x: f"${x:,.2f}")
-            status_costs_display['Pct of Total'] = status_costs_display['Pct of Total'].apply(lambda x: f"{x}%")
-            st.dataframe(status_costs_display, width='stretch', hide_index=True)
-            
-            st.caption("💡 Only 'success' status incurs cost. Reused models cost $0!")
         
         # DETAILED RUN BREAKDOWN
         st.divider()

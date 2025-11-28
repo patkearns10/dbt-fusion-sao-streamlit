@@ -1,5 +1,99 @@
 # Changelog
 
+## [2.9.0] - November 28, 2025
+
+### Major Feature: Enhanced SAO Adoption Analysis 🎯
+
+Added comprehensive State-Aware Orchestration (SAO) adoption analysis to the **Environment Overview** tab to help organizations understand and optimize their SAO usage.
+
+#### New SAO Adoption Section
+
+**Overall Metrics & Visualizations:**
+- Total Jobs, SAO-Enabled Jobs, and Non-SAO Jobs metrics
+- Dual visualizations: Donut chart and bar chart showing adoption split
+- Scheduled jobs-specific analysis with dedicated pie chart and metrics
+
+**Job Type Breakdown (New!):**
+- Grouped bar chart comparing SAO adoption across CI, Merge, Scheduled, and Other job types
+- Summary table with counts and percentages by job type
+- Smart alerts for low adoption in critical job types (CI and Merge jobs)
+
+**Freshness Configuration Coverage (New!):**
+- 4 key metrics tracking configuration patterns:
+  - ✅ Both SAO & Freshness (optimal)
+  - ⚠️ SAO without Freshness (may not reuse effectively)
+  - 💡 Freshness without SAO (missing optimization)
+  - ❌ Neither (basic configuration)
+- Color-coded bar chart showing configuration distribution
+- Expandable lists of jobs with problematic configurations
+- Helps identify misconfigured jobs that won't benefit from SAO
+
+**Top Opportunities Analysis (New!):**
+- Intelligent ranking of non-SAO jobs by potential impact
+- Impact Score calculation: `Recent Runs × Avg Duration (minutes)`
+- Priority levels: High (CI/Merge), Medium (Scheduled), Low (Other)
+- Top 10 table with color-coded text by priority (red/orange/gray)
+- ROI calculator showing estimated time savings if SAO enabled
+- Helps prioritize which jobs to enable SAO on first
+
+**All Jobs List:**
+- Expandable table showing all jobs with SAO status (✅/❌)
+- Includes Job ID, Name, Type, and Environment ID
+- Sorted by SAO status then job name
+
+#### Visual Enhancements
+- Consistent color scheme: Green (#10b981) for SAO-enabled, Gray (#6b7280) for non-SAO
+- Horizontal legends positioned at top of charts
+- All bar charts show value labels for quick reading
+- Standardized chart heights (400px) for visual consistency
+- Responsive layouts with `use_container_width=True`
+
+### Model Details Tab Enhancements 📋
+
+**Project/Package Filtering (New!):**
+- Multiselect filter to show models from specific projects/packages
+- Helps focus on main project vs. external dependencies
+- Default: All projects selected
+
+**Project/Package Column:**
+- Added "Project/Package" column to the results table
+- Clearly shows which project each model belongs to
+- Useful for identifying cross-project references
+
+**Group by Project/Package (New!):**
+- Optional checkbox to group results by project
+- Each project displayed in expandable section with:
+  - Project name and item count
+  - Project-specific metrics (Total Items, With Freshness, Coverage %)
+  - Filtered table for that project
+- All sections expanded by default for easy scanning
+- Makes it easy to compare freshness coverage across projects
+
+### Cost Analysis Tab Improvements 💰
+
+**Removed:**
+- Cost Distribution by Status chart (redundant - only showed that reused = $0)
+
+### Bug Fixes & Polish 🔧
+
+**Top Opportunities Table:**
+- Changed from background highlighting to colored text with bold font
+- Much more readable: Red (High), Orange (Medium), Gray (Low)
+- Rounded decimal places from 6+ to 2 digits
+
+**All Files:**
+- Continued removal of outdated "log parsing" documentation
+- Updated to reflect step-based `run_results.json` approach throughout
+
+### Technical Notes
+
+- SAO detection uses `cost_optimization_features` array check for `'state_aware_orchestration'`
+- Freshness config detection analyzes job `execute_steps` for freshness-related commands
+- Project filtering uses pandas value_counts for intelligent detection
+- All new features work across all customer environments without configuration
+
+---
+
 ## [2.8.6] - November 26, 2025
 
 ### Critical Bug Fix: API Limit Pagination 📊

@@ -6,24 +6,40 @@ Try here:
 https://dbt-fusion-sao.streamlit.app/
 
 
-## ✨ What's New in v2.8.0
+## ✨ What's New in v2.9.0
 
-### 🎯 Revolutionary Step-Based Run Analysis
-- **Accurate Model Counting**: Intelligently filters to only `dbt run` and `dbt build` steps, ignoring auxiliary commands like `dbt compile`
-- **No More Guesswork**: Eliminated all heuristic-based detection and fuzzy logic
-- **Multi-Step Support**: Correctly aggregates results from jobs with multiple dbt commands
-- **Real Data**: Uses actual run_results.json from relevant steps only
+### 🎯 Enhanced SAO Adoption Analysis
 
-### 🎚️ Run Status Filtering
-- **Filter by Status**: Analyze Success, Error, or Cancelled runs independently
-- **Multi-Select**: Combine multiple statuses for comprehensive analysis
-- **Available In**: Model Details, Historical Trends, Cost Analysis tabs
+Complete **State-Aware Orchestration (SAO) analysis suite** in Environment Overview:
 
-### 🔍 What This Fixes
-Before: A job that ran 1 model showed 1736 "success" models (due to final `dbt compile` step)
-After: Shows exactly 1 model executed with correct status breakdown
+**SAO Metrics & Visualizations:**
+- Overall adoption rate with dual charts (donut + bar)
+- Scheduled jobs-specific analysis (where SAO matters most!)
+- **Job Type Breakdown**: Compare SAO adoption across CI, Merge, Scheduled, and Other jobs
 
-No more confusing warnings, no more inflated counts - just accurate, trustworthy data!
+**Freshness Configuration Coverage:**
+- Identify jobs with SAO but no freshness configs (won't reuse effectively!)
+- Find jobs with freshness but no SAO (missing optimization opportunity)
+- 4 key configuration patterns with color-coded insights
+
+**Top Opportunities Analysis:**
+- Prioritized list of which jobs to enable SAO on next
+- Impact score based on run frequency and duration
+- ROI calculator showing estimated time savings
+- Color-coded by priority (High/Medium/Low)
+
+### 📋 Model Details Enhancements
+
+**Project/Package Management:**
+- Filter models by project/package (multiselect dropdown)
+- New "Project/Package" column showing model origins
+- **Group by Project/Package**: Optional expandable view with per-project metrics
+- Easily distinguish main project from external dependencies
+
+### 💰 Cost Analysis Improvements
+
+- Removed redundant "Cost Distribution by Status" chart
+- Streamlined focus on actionable cost metrics
 
 ---
 
@@ -88,28 +104,39 @@ One-time setup for your dbt Cloud credentials and default job settings.
 - **Key Metrics**: Reuse rate, freshness coverage, SLO compliance
 - **SLO Compliance Table**: All models with execution status and configuration
 - **Interactive Visualizations**: Build after distribution, status breakdown
+- **SAO Adoption Analysis** (NEW!):
+  - Overall and scheduled job SAO adoption metrics
+  - Job type breakdown (CI, Merge, Scheduled, Other)
+  - Freshness configuration coverage analysis
+  - Top opportunities for enabling SAO with impact scores
+  - All jobs list with SAO status
 - **Automatic Insights**: AI-powered recommendations for optimization
 - Filter by status, SLO compliance, and freshness configuration
 
-**Perfect for**: Daily monitoring, stakeholder reports, optimization planning
+**Perfect for**: Daily monitoring, stakeholder reports, SAO optimization planning
 
 **Note**: Requires Environment ID to be configured
 
 ### Tab 3: 📋 Model Details
 
-**Deep dive into individual model configurations** from job manifest:
+**Deep dive into individual model configurations** from job manifest (with project filtering):
 - **Flexible Source Selection**:
   - Environment (Latest): Get latest run from environment automatically
   - Specific Job ID: Analyze a particular job's latest run
   - Specific Run ID: Direct run analysis
-- **NEW: Run Status Filtering** - Choose Success, Error, or Cancelled runs
+- **NEW: Project/Package Management**:
+  - Filter by project/package (multiselect dropdown)
+  - "Project/Package" column shows model origins
+  - Optional "Group by Project/Package" view with per-project metrics
+  - Easily distinguish main project from external dependencies
+- **Run Status Filtering** - Choose Success, Error, or Cancelled runs
 - **Job Type Filtering** - Filter to ci, merge, scheduled, or other jobs
 - Model-by-model freshness configuration
 - `warn_after`, `error_after`, `build_after` settings
 - Source and model identification
 - Export detailed reports
 
-**Perfect for**: Configuration audits, troubleshooting specific models, compliance documentation
+**Perfect for**: Configuration audits, cross-project analysis, troubleshooting specific models, compliance documentation
 
 **Note**: Uses job manifest data (point-in-time snapshot)
 
@@ -137,7 +164,7 @@ One-time setup for your dbt Cloud credentials and default job settings.
 ### Tab 5: 💰 Cost Analysis
 
 **Quantify the financial impact** of your dbt optimization efforts:
-- **NEW: Run Status Filtering** - Analyze costs for Success, Error, or Cancelled runs
+- **Run Status Filtering** - Analyze costs for Success, Error, or Cancelled runs
 - **Environment-Wide or Job-Specific**: Choose all jobs in environment or filter to one
 - **Job Type Filtering** - Filter to ci, merge, scheduled, or other jobs
 - **SAO Jobs Only** - Focus on SAO jobs for accurate cost/reuse metrics
@@ -149,6 +176,7 @@ One-time setup for your dbt Cloud credentials and default job settings.
 - **Cost Breakdown**: Per-run and model-level cost analysis
 - **Multi-Currency Support**: USD, EUR, GBP, CAD, AUD
 - **Warehouse Configuration**: Support for 8 warehouse sizes (X-Small to 4X-Large)
+- _(Removed redundant "Cost Distribution by Status" chart - focused on actionable metrics)_
 
 **Perfect for**: Stakeholder reporting, optimization prioritization, budget planning
 
