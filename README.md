@@ -30,11 +30,18 @@ Complete **State-Aware Orchestration (SAO) analysis suite** in Environment Overv
 
 ### 📋 Model Details Enhancements
 
+**Package Column & Coverage Analysis:**
+- **Automatic package extraction** from `unique_id` field
+- New "Package" column showing model origins (e.g., main_project, dbt_utils, etc.)
+- **Enhanced coverage table**: Freshness breakdown by Package & Resource Type
+- Packages auto-sorted by size (main project first)
+- Easily see: main project = 100% freshness, imported packages = lower
+
 **Project/Package Management:**
 - Filter models by project/package (multiselect dropdown)
-- New "Project/Package" column showing model origins
 - **Group by Project/Package**: Optional expandable view with per-project metrics
 - Easily distinguish main project from external dependencies
+- Works universally without hardcoding project names
 
 ### 💰 Cost Analysis Improvements
 
@@ -119,16 +126,18 @@ One-time setup for your dbt Cloud credentials and default job settings.
 
 ### Tab 3: 📋 Model Details
 
-**Deep dive into individual model configurations** from job manifest (with project filtering):
+**Deep dive into individual model configurations** from job manifest (with package analysis):
 - **Flexible Source Selection**:
   - Environment (Latest): Get latest run from environment automatically
   - Specific Job ID: Analyze a particular job's latest run
   - Specific Run ID: Direct run analysis
-- **NEW: Project/Package Management**:
+- **NEW: Package Column & Coverage Analysis**:
+  - Automatic package extraction from unique_id
+  - "Package" column shows which package each model belongs to
+  - Enhanced coverage table: Freshness by Package & Resource Type
+  - Packages auto-sorted (main project first)
   - Filter by project/package (multiselect dropdown)
-  - "Project/Package" column shows model origins
   - Optional "Group by Project/Package" view with per-project metrics
-  - Easily distinguish main project from external dependencies
 - **Run Status Filtering** - Choose Success, Error, or Cancelled runs
 - **Job Type Filtering** - Filter to ci, merge, scheduled, or other jobs
 - Model-by-model freshness configuration
@@ -136,7 +145,7 @@ One-time setup for your dbt Cloud credentials and default job settings.
 - Source and model identification
 - Export detailed reports
 
-**Perfect for**: Configuration audits, cross-project analysis, troubleshooting specific models, compliance documentation
+**Perfect for**: Configuration audits, package freshness analysis, cross-project dependencies, compliance documentation
 
 **Note**: Uses job manifest data (point-in-time snapshot)
 
