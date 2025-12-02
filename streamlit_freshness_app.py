@@ -371,6 +371,10 @@ def calculate_summary_stats(results):
     
     df = pd.DataFrame(results)
     
+    # Extract package from unique_id if not already present
+    if 'package' not in df.columns and 'unique_id' in df.columns:
+        df['package'] = df['unique_id'].apply(lambda x: x.split('.')[1] if isinstance(x, str) and len(x.split('.')) > 1 else 'unknown')
+    
     # Overall stats
     total_items = len(df)
     items_with_freshness = len(df[df['is_freshness_configured'] == True])
@@ -392,6 +396,28 @@ def calculate_summary_stats(results):
             '% With Freshness': f'{pct:.1f}%'
         })
     
+    # By package and resource type
+    package_resource_stats = []
+    if 'package' in df.columns:
+        # Sort packages by count (descending) to show main project first
+        package_counts = df['package'].value_counts()
+        for package in package_counts.index:
+            for resource_type in sorted(df['resource_type'].unique()):
+                subset = df[(df['package'] == package) & (df['resource_type'] == resource_type)]
+                if len(subset) > 0:  # Only include if there are items
+                    total = len(subset)
+                    with_freshness = len(subset[subset['is_freshness_configured'] == True])
+                    pct = (with_freshness / total * 100) if total > 0 else 0
+                    
+                    package_resource_stats.append({
+                        'Package': package,
+                        'Resource Type': resource_type,
+                        'Total Count': total,
+                        'With Freshness': with_freshness,
+                        'Without Freshness': total - with_freshness,
+                        '% With Freshness': f'{pct:.1f}%'
+                    })
+    
     summary = {
         'overall': {
             'total': total_items,
@@ -399,7 +425,8 @@ def calculate_summary_stats(results):
             'without_freshness': items_without_freshness,
             'pct_with_freshness': (items_with_freshness / total_items * 100) if total_items > 0 else 0
         },
-        'by_resource': pd.DataFrame(resource_stats)
+        'by_resource': pd.DataFrame(resource_stats),
+        'by_package_resource': pd.DataFrame(package_resource_stats) if package_resource_stats else None
     }
     
     return summary
@@ -861,15 +888,29 @@ def show_freshness_analysis():
             st.subheader("📈 Freshness Coverage by Resource Type")
             st.dataframe(
                 summary['by_resource'],
-                width='stretch',
+                use_container_width=True,
                 hide_index=True
             )
+            
+            # Package-level breakdown
+            if summary.get('by_package_resource') is not None and not summary['by_package_resource'].empty:
+                st.subheader("📦 Freshness Coverage by Package & Resource Type")
+                st.markdown("*Packages are sorted by size (largest first = main project)*")
+                st.dataframe(
+                    summary['by_package_resource'],
+                    use_container_width=True,
+                    hide_index=True
+                )
             
             # Detailed results
             st.header("📋 Detailed Results")
             
             # Convert to DataFrame
             df = pd.DataFrame(results)
+            
+            # Extract package from unique_id if not already present
+            if 'package_name' not in df.columns and 'unique_id' in df.columns:
+                df['package_name'] = df['unique_id'].apply(lambda x: x.split('.')[1] if isinstance(x, str) and len(x.split('.')) > 1 else 'unknown')
             
             # Add filters
             col1, col2, col3 = st.columns(3)
@@ -924,17 +965,12 @@ def show_freshness_analysis():
             # Format the dataframe for display
             display_df = filtered_df.copy()
             
-            # Reorder columns for better display (include package_name if available)
-            display_columns = ['name', 'resource_type']
-            if 'package_name' in display_df.columns:
-                display_columns.append('package_name')
-            display_columns.extend([
-                'is_freshness_configured',
+            # Reorder columns for better display (include package_name right after resource_type)
+            display_columns = ['name', 'resource_type', 'package_name', 'is_freshness_configured',
                 'warn_after_count', 'warn_after_period',
                 'error_after_count', 'error_after_period',
                 'build_after_count', 'build_after_period',
-                'updates_on', 'unique_id'
-            ])
+                'updates_on', 'unique_id']
             display_df = display_df[[col for col in display_columns if col in display_df.columns]]
             
             # Rename columns for better display

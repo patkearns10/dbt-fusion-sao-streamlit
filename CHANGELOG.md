@@ -50,17 +50,27 @@ Added comprehensive State-Aware Orchestration (SAO) adoption analysis to the **E
 
 ### Model Details Tab Enhancements 📋
 
-**Project/Package Filtering (New!):**
+**Package Column Extraction (New!):**
+- Automatically extracts package name from `unique_id` field
+- Package column appears right after Resource Type
+- Format: `model.{package}.{model_name}` → extracts package
+- Works universally without hardcoding project names
+
+**Enhanced Freshness Coverage Table (New!):**
+- New table: "📦 Freshness Coverage by Package & Resource Type"
+- Breaks down coverage by both package AND resource type
+- **Packages automatically sorted by size** (main project appears first)
+- Shows exactly which packages have freshness configs
+- Expected: ~100% for main project, lower for imported packages
+- Makes it easy to identify configuration gaps
+
+**Project/Package Filtering:**
 - Multiselect filter to show models from specific projects/packages
 - Helps focus on main project vs. external dependencies
 - Default: All projects selected
+- Now works with automatically extracted package names
 
-**Project/Package Column:**
-- Added "Project/Package" column to the results table
-- Clearly shows which project each model belongs to
-- Useful for identifying cross-project references
-
-**Group by Project/Package (New!):**
+**Group by Project/Package:**
 - Optional checkbox to group results by project
 - Each project displayed in expandable section with:
   - Project name and item count
